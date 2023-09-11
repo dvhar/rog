@@ -1,4 +1,5 @@
 #include <array>
+#include <iterator>
 #include <thread>
 #include <iostream>
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 using namespace std;
 #define PORT 4433
 #define CHECK(A,B) if ((A)<0){ perror(B); exit(1); }
@@ -65,26 +67,25 @@ class ringbuf {
 void sockserve(ringbuf& rb);
 void readinput(){
 	char buf[1024];
-	int len;
-	string out;
+	memset(buf, 0, sizeof(buf));
+	int i;
 	ringbuf rb{};
 	thread t([&](){ sockserve(rb); });
 	while (1){
-		len = read(0, buf, sizeof(buf));
-		rb.in(string_view(buf, len));
+		i = read(0, buf, sizeof(buf)-1);
+		rb.in(string_view(buf, i));
+		buf[0]=0;
 	}
 	t.join();
 }
 
 void sockserve(ringbuf& rb){
-	int sockfd;
+	int sockfd, n;
     struct sockaddr_in serv_addr;
+	struct pollfd fds[1];
     char buffer[256];
-    int n;
-    
     CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
 	serv_addr = {.sin_family=AF_INET, .sin_port=htons(PORT), .sin_addr={.s_addr=INADDR_ANY}};
-    bzero(&(serv_addr.sin_zero), 8);
     CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), ("ERROR on binding"));
     listen(sockfd,5);
     while(1){
@@ -92,18 +93,14 @@ void sockserve(ringbuf& rb){
         struct sockaddr_in cli_addr;
         socklen_t clilen = sizeof(cli_addr);
         CHECK(new_socket = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen), "ERROR on accept");
-		if ((n = read(new_socket, buffer, 255)) != 0) {
-			buffer[n] = 0;
-			printf("Received: %s\n", buffer);
-			while (1){
-				string log;
-				if (!rb.out(log)){
-					sleep(1);
-					continue;
-				}
-				CHECK(sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)), "Error sending data to client\n");
-				printf("wrote %d\n", n);
+		while (1){
+			string log;
+			if (!rb.out(log)){
+				sleep(1);
+				continue;
 			}
+			CHECK(n = sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)),
+				"Error sending data to client\n");
 		}
 		close(new_socket);
 	}
@@ -122,18 +119,19 @@ void sockclient(){
     serv_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
     CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server\n");
-    strcpy(buffer, "Hello from client!");
-    CHECK(n = sendto(sockfd, buffer, strlen(buffer), 0, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error sending data to server\n");
 	while ((n = recvfrom(sockfd, buffer, sizeof(buffer), 0, NULL, NULL)) != 0){
 		CHECK(n, "Error receiving data from server\n");
-		buffer[n] = 0;
 		printf("Received: %s\n", buffer);
+		buffer[n] = 0;
 	}
 	printf("recieved %d, closing connection\n", n);
     close(sockfd);
 }
 
 int main(int argc, char** argv){
+	sigset_t set;
+    sigaddset(&set, SIGPIPE);
+    CHECK(sigprocmask(SIG_BLOCK, &set, NULL), "Block broken pipe signal");
 	if (argc < 2)
 		readinput();
 	else
