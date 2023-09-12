@@ -15,7 +15,8 @@
 #include <signal.h>
 using namespace std;
 #define PORT 4433
-#define CHECK(A,B) if ((A)<0){ perror(B); exit(1); }
+#define CHECK(A,B) if ((A)<0){ perror(B); running = false; exit(1); }
+bool running = true;
 
 class ringbuf {
 	static const unsigned long bufsize = 1024;
@@ -71,7 +72,7 @@ void readinput(){
 	int i;
 	ringbuf rb{};
 	thread t([&](){ sockserve(rb); });
-	while (1){
+	while (running){
 		i = read(0, buf, sizeof(buf)-1);
 		rb.in(string_view(buf, i));
 		buf[0]=0;
@@ -82,11 +83,10 @@ void readinput(){
 void sockserve(ringbuf& rb){
 	int sockfd, n;
     struct sockaddr_in serv_addr;
-	struct pollfd fds[1];
     char buffer[256];
     CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
 	serv_addr = {.sin_family=AF_INET, .sin_port=htons(PORT), .sin_addr={.s_addr=INADDR_ANY}};
-    CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), ("ERROR on binding"));
+    CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "ERROR binding");
     listen(sockfd,5);
     while(1){
         int new_socket;
@@ -99,8 +99,9 @@ void sockserve(ringbuf& rb){
 				sleep(1);
 				continue;
 			}
-			CHECK(n = sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)),
-				"Error sending data to client\n");
+			if (sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)) < 0){
+				break;
+			}
 		}
 		close(new_socket);
 	}
@@ -113,16 +114,16 @@ void sockclient(){
     char buffer[1024];
     int n;
 
-    CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "Error creating socket\n");
+    CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "Error creating socket");
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
-    CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server\n");
+    CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server");
 	while ((n = recvfrom(sockfd, buffer, sizeof(buffer), 0, NULL, NULL)) != 0){
 		CHECK(n, "Error receiving data from server\n");
-		printf("Received: %s\n", buffer);
 		buffer[n] = 0;
+		cout << buffer;
 	}
 	printf("recieved %d, closing connection\n", n);
     close(sockfd);
