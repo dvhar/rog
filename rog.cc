@@ -81,9 +81,8 @@ void readinput(){
 }
 
 void sockserve(ringbuf& rb){
-	int sockfd, n;
+	int sockfd;
     struct sockaddr_in serv_addr;
-    char buffer[256];
     CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
 	serv_addr = {.sin_family=AF_INET, .sin_port=htons(PORT), .sin_addr={.s_addr=INADDR_ANY}};
     CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "ERROR binding");
