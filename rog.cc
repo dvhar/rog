@@ -1,18 +1,22 @@
-#include <array>
-#include <iterator>
-#include <thread>
-#include <iostream>
-#include <algorithm>
-#include <stdexcept>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <arpa/inet.h>
+#include <bits/getopt_core.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <algorithm>
+#include <array>
+#include <iostream>
+#include <iterator>
+#include <regex>
+#include <stdexcept>
+#include <thread>
 using namespace std;
 #define PORT 4433
 #define CHECK(A,B) if ((A)<0){ perror(B); running = false; exit(1); }
@@ -107,7 +111,37 @@ void sockserve(ringbuf& rb){
 }
 
 
-void sockclient(){
+
+struct in_addr getAddress(char* host){
+	struct in_addr ret;
+
+	// first see if given ip address
+	regex ippat("[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}");
+	if(regex_match(host, ippat)){
+		inet_pton(AF_INET, "127.0.0.1", &ret);
+		return ret;
+	}
+
+	// otherwise get ip from hostname
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    if (getaddrinfo(host, NULL, &hints, &result)){
+        cerr << "Error: Unable to resolve hostname" << endl;
+		exit(1);
+    }
+    char ip_address[INET_ADDRSTRLEN];
+    ret = ((struct sockaddr_in *)result->ai_addr)->sin_addr;
+	auto fam = result->ai_family;
+	freeaddrinfo(result);
+    inet_ntop(fam, &ret, ip_address, INET_ADDRSTRLEN);
+    cout << "IP Address: " << ip_address << endl;
+    return ret;
+}
+
+void sockclient(struct in_addr remotehost){
 	int sockfd;
     struct sockaddr_in serv_addr;
     char buffer[1024];
@@ -117,7 +151,7 @@ void sockclient(){
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+    serv_addr.sin_addr = remotehost;
     CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server");
 	while ((n = recvfrom(sockfd, buffer, sizeof(buffer), 0, NULL, NULL)) != 0){
 		CHECK(n, "Error receiving data from server\n");
@@ -128,13 +162,23 @@ void sockclient(){
     close(sockfd);
 }
 
+
 int main(int argc, char** argv){
 	sigset_t set;
     sigaddset(&set, SIGPIPE);
     CHECK(sigprocmask(SIG_BLOCK, &set, NULL), "Block broken pipe signal");
-	if (argc < 2)
+	if (argc < 2) {
 		readinput();
-	else
-		sockclient();
+		return 0;
+	}
+
+	auto host = (char*)"localhost";
+	for(char c; (c = getopt(argc, argv, "i:")) != -1;)
+		switch(c){
+		case 'i':
+			host = optarg;
+			break;
+		};
+	sockclient(getAddress(host));
 	return 0;
 }
