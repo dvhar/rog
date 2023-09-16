@@ -14,28 +14,35 @@
 #include <array>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <regex>
 #include <stdexcept>
 #include <thread>
 using namespace std;
 #define PORT 4433
-#define CHECK(A,B) if ((A)<0){ perror(B); running = false; exit(1); }
+#define CHECK(A,B) if ((A)<0){ perror(B); globals::running = false; exit(1); }
+
+namespace globals {
 bool running = true;
+bool follow = true;
+int amount = 0;
+}
 
 class ringbuf {
 	static const unsigned long bufsize = 1024;
 	std::array<char, bufsize+1> buf{0};
+	mutex mtx;
 	int front = 0;
 	int rear = 0;
 	bool hasdata = 0;
 	public:
 	ringbuf(){
 		fill(buf.begin(), buf.end(), 0);
+		mtx.lock();
 	}
 	void in(string_view data){
 		if (data.size() == 0)
 			return;
-		hasdata = true;
 		if (data.size() > bufsize)
 			data = data.substr(data.size() - bufsize);
 		auto writeamount = min(data.size(), bufsize - front);
@@ -45,6 +52,8 @@ class ringbuf {
 			if (rear > front && rear < nextfront)
 				rear = nextfront;
 			front = nextfront;
+			hasdata = true;
+			mtx.unlock();
 			return;
 		}
 		copy(data.begin()+writeamount, data.end(), buf.begin());
@@ -52,11 +61,13 @@ class ringbuf {
 		if (rear < nextfront)
 			rear = nextfront;
 		front = nextfront;
+		hasdata = true;
+		mtx.unlock();
 	}
-	int out(string& out){
+	void out(string& out){
 		out.clear();
 		if (!hasdata)
-			return 0;
+			mtx.lock();
 		if (rear < front){
 			out.insert(out.begin(), buf.begin()+rear, buf.begin()+front);
 		} else {
@@ -65,7 +76,6 @@ class ringbuf {
 		}
 		rear = front;
 		hasdata = false;
-		return out.size();
 	}
 };
 
@@ -76,7 +86,7 @@ void readinput(){
 	int i;
 	ringbuf rb{};
 	thread t([&](){ sockserve(rb); });
-	while (running){
+	while (globals::running){
 		i = read(0, buf, sizeof(buf)-1);
 		rb.in(string_view(buf, i));
 		buf[0]=0;
@@ -98,10 +108,7 @@ void sockserve(ringbuf& rb){
         CHECK(new_socket = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen), "ERROR on accept");
 		while (1){
 			string log;
-			if (!rb.out(log)){
-				sleep(1);
-				continue;
-			}
+			rb.out(log);
 			if (sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)) < 0){
 				break;
 			}
@@ -118,7 +125,7 @@ struct in_addr getAddress(char* host){
 	// first see if given ip address
 	regex ippat("[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}");
 	if(regex_match(host, ippat)){
-		inet_pton(AF_INET, "127.0.0.1", &ret);
+		inet_pton(AF_INET, host, &ret);
 		return ret;
 	}
 
@@ -173,10 +180,15 @@ int main(int argc, char** argv){
 	}
 
 	auto host = (char*)"localhost";
-	for(char c; (c = getopt(argc, argv, "i:")) != -1;)
+	for(char c; (c = getopt(argc, argv, "ti:c:")) != -1;)
 		switch(c){
 		case 'i':
 			host = optarg;
+			break;
+		case 'c':
+			globals::amount = atoi(optarg);
+		case 't':
+			globals::follow = false;
 			break;
 		};
 	sockclient(getAddress(host));
