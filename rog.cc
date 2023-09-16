@@ -28,6 +28,15 @@ bool follow = true;
 int amount = 0;
 }
 
+class ipcmsg {
+	public:
+	enum {
+		LOOP = 0,
+		SINGLE = 1,
+	};
+	int what;
+};
+
 class ringbuf {
 	static const unsigned long bufsize = 1024;
 	std::array<char, bufsize+1> buf{0};
@@ -96,22 +105,33 @@ void readinput(){
 
 void sockserve(ringbuf& rb){
 	int sockfd;
-    struct sockaddr_in serv_addr;
-    CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
+	struct sockaddr_in serv_addr;
+	CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
 	serv_addr = {.sin_family=AF_INET, .sin_port=htons(PORT), .sin_addr={.s_addr=INADDR_ANY}};
-    CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "ERROR binding");
-    listen(sockfd,5);
-    while(1){
-        int new_socket;
-        struct sockaddr_in cli_addr;
-        socklen_t clilen = sizeof(cli_addr);
-        CHECK(new_socket = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen), "ERROR on accept");
-		while (1){
-			string log;
-			rb.out(log);
-			if (sendto(new_socket, log.data(), log.size(), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr)) < 0){
-				break;
+	CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "ERROR binding");
+	listen(sockfd,5);
+	while(1){
+		int new_socket;
+		struct sockaddr_in cli_addr;
+		socklen_t clilen = sizeof(cli_addr);
+		CHECK(new_socket = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen), "ERROR on accept");
+		ipcmsg command{0};
+		CHECK(read(new_socket, &command, sizeof(ipcmsg)), "Error reading control message");
+		switch (command.what){
+		case ipcmsg::LOOP:{
+			while (1){
+				string data;
+				rb.out(data);
+				if (write(new_socket, data.data(), data.size()) < 0){
+					break;
+				}
 			}
+			break;}
+		case ipcmsg::SINGLE:{
+			string data;
+			rb.out(data);
+			write(new_socket, data.data(), data.size());
+			break;}
 		}
 		close(new_socket);
 	}
@@ -130,50 +150,50 @@ struct in_addr getAddress(char* host){
 	}
 
 	// otherwise get ip from hostname
-    struct addrinfo hints, *result;
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    if (getaddrinfo(host, NULL, &hints, &result)){
-        cerr << "Error: Unable to resolve hostname" << endl;
+	struct addrinfo hints, *result;
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
+	if (getaddrinfo(host, NULL, &hints, &result)){
+		cerr << "Error: Unable to resolve hostname" << endl;
 		exit(1);
-    }
-    char ip_address[INET_ADDRSTRLEN];
-    ret = ((struct sockaddr_in *)result->ai_addr)->sin_addr;
+	}
+	char ip_address[INET_ADDRSTRLEN];
+	ret = ((struct sockaddr_in *)result->ai_addr)->sin_addr;
 	auto fam = result->ai_family;
 	freeaddrinfo(result);
-    inet_ntop(fam, &ret, ip_address, INET_ADDRSTRLEN);
-    cout << "IP Address: " << ip_address << endl;
-    return ret;
+	inet_ntop(fam, &ret, ip_address, INET_ADDRSTRLEN);
+	cout << "IP Address: " << ip_address << endl;
+	return ret;
 }
 
 void sockclient(struct in_addr remotehost){
 	int sockfd;
-    struct sockaddr_in serv_addr;
-    char buffer[1024];
-    int n;
-
-    CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "Error creating socket");
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-    serv_addr.sin_addr = remotehost;
-    CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server");
+	struct sockaddr_in serv_addr;
+	char buffer[1024];
+	int n;
+	CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "Error creating socket");
+	memset(&serv_addr, 0, sizeof(serv_addr));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_port = htons(PORT);
+	serv_addr.sin_addr = remotehost;
+	CHECK(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "Error connecting to server");
+	ipcmsg msg{ .what = globals::follow ? ipcmsg::LOOP : ipcmsg::SINGLE };
+	CHECK(write(sockfd, &msg, sizeof(msg)), "Error sending control message");
 	while ((n = recvfrom(sockfd, buffer, sizeof(buffer), 0, NULL, NULL)) != 0){
 		CHECK(n, "Error receiving data from server\n");
 		buffer[n] = 0;
 		cout << buffer;
 	}
-	printf("recieved %d, closing connection\n", n);
-    close(sockfd);
+	close(sockfd);
 }
 
 
 int main(int argc, char** argv){
 	sigset_t set;
-    sigaddset(&set, SIGPIPE);
-    CHECK(sigprocmask(SIG_BLOCK, &set, NULL), "Block broken pipe signal");
+	sigaddset(&set, SIGPIPE);
+	CHECK(sigprocmask(SIG_BLOCK, &set, NULL), "Block broken pipe signal");
 	if (argc < 2) {
 		readinput();
 		return 0;
