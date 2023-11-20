@@ -1,5 +1,4 @@
 #include <arpa/inet.h>
-#include <arpa/inet.h>
 #include <bits/getopt_core.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -16,7 +15,6 @@
 #include <iterator>
 #include <mutex>
 #include <regex>
-#include <stdexcept>
 #include <thread>
 using namespace std;
 #define PORT 4433
@@ -94,13 +92,13 @@ void readinput(){
 	memset(buf, 0, sizeof(buf));
 	int i;
 	ringbuf rb{};
-	thread t([&](){ sockserve(rb); });
+	thread serverThread([&](){ sockserve(rb); });
 	while (globals::running){
 		i = read(0, buf, sizeof(buf)-1);
 		rb.in(string_view(buf, i));
 		buf[0]=0;
 	}
-	t.join();
+	serverThread.join();
 }
 
 void sockserve(ringbuf& rb){
@@ -109,18 +107,18 @@ void sockserve(ringbuf& rb){
 	CHECK(sockfd = socket(AF_INET, SOCK_STREAM, 0), "ERROR opening socket");
 	serv_addr = {.sin_family=AF_INET, .sin_port=htons(PORT), .sin_addr={.s_addr=INADDR_ANY}};
 	CHECK(bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)), "ERROR binding");
-	listen(sockfd,5);
+	CHECK(listen(sockfd,5), "Error listening");
 	while(1){
 		int new_socket;
 		struct sockaddr_in cli_addr;
 		socklen_t clilen = sizeof(cli_addr);
 		CHECK(new_socket = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen), "ERROR on accept");
 		ipcmsg command{0};
+		string data;
 		CHECK(read(new_socket, &command, sizeof(ipcmsg)), "Error reading control message");
 		switch (command.what){
 		case ipcmsg::LOOP:{
 			while (1){
-				string data;
 				rb.out(data);
 				if (write(new_socket, data.data(), data.size()) < 0){
 					break;
@@ -128,7 +126,6 @@ void sockserve(ringbuf& rb){
 			}
 			break;}
 		case ipcmsg::SINGLE:{
-			string data;
 			rb.out(data);
 			write(new_socket, data.data(), data.size());
 			break;}
@@ -164,7 +161,6 @@ struct in_addr getAddress(char* host){
 	auto fam = result->ai_family;
 	freeaddrinfo(result);
 	inet_ntop(fam, &ret, ip_address, INET_ADDRSTRLEN);
-	cout << "IP Address: " << ip_address << endl;
 	return ret;
 }
 

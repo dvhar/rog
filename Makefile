@@ -1,5 +1,5 @@
 CC = g++
-CFLAGS = -Wall -O2 --std=gnu++17
+CFLAGS = -Wall -O3 --std=gnu++17
 TARGET = rog
 SOURCES = $(wildcard *.cc)
 all: $(TARGET)
