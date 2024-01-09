@@ -1,9 +1,9 @@
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{channel,Receiver,Sender};
+use std::sync::mpsc::{channel,Receiver};
 use std::net::{ TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::str;
+use std::process;
 
 const BUFSZ: usize = 1024;
 
@@ -12,20 +12,15 @@ struct RingBuf {
     front: usize,
     rear: usize,
     hasdata: bool,
-    rx: Receiver<i32>,
-    tx: Sender<i32>,
 }
 
 impl RingBuf {
     fn new() -> Self {
-        let (atx, arx) = channel::<i32>();
         RingBuf {
             buf: [0u8; BUFSZ],
             front: 0,
             rear: 0,
             hasdata: false,
-            tx: atx,
-            rx: arx,
         }
     }
 
@@ -47,7 +42,6 @@ impl RingBuf {
             }
 			self.front = nextfront;
 			self.hasdata = true;
-            self.tx.send(0).unwrap();
 			return;
 		}
         self.buf[..len-writeamount].copy_from_slice(&source[writeamount..]);
@@ -57,95 +51,85 @@ impl RingBuf {
         }
         self.front = nextfront;
         self.hasdata = true;
-        self.tx.send(0).unwrap();
     }
 
-    fn out(&mut self, data: &mut Vec<u8>) {
-        data.clear();
+    fn read_to(&mut self, data: &mut [u8]) -> usize {
         if !self.hasdata {
-            self.rx.recv().unwrap();
+            return 0;
         }
+        let n;
         if self.rear < self.front {
-            data.extend_from_slice(&self.buf[self.rear..self.front]);
+            n = self.front-self.rear;
+            data[..n].copy_from_slice(&self.buf[self.rear..self.front]);
         } else {
-            data.extend_from_slice(&self.buf[self.front..]);
-            data.extend_from_slice(&self.buf[..self.rear]);
+            let mid = BUFSZ-self.front;
+            n = mid + self.rear;
+            data[0..mid].copy_from_slice(&self.buf[self.front..]);
+            data[mid..n].copy_from_slice(&self.buf[..self.rear]);
         }
         self.front = self.rear;
         self.hasdata = false;
+        return n;
     }
 }
 
-fn sock_serve(rb: Arc<Mutex<RingBuf>>) {
-    let listener = TcpListener::bind("0.0.0.0:19888").expect("BIND error");
+fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
+    let listener = match TcpListener::bind("0.0.0.0:19888") {
+        Ok(lsnr) => lsnr,
+        Err(_) => {
+            eprintln!("Could not bind to port. Is a rog server already running?");
+            process::exit(0);
+        },
+    };
+    let mut buf = [0u8; BUFSZ];
     for stream in listener.incoming() {
         let ringbuf = rb.clone();
         match stream {
             Ok(mut stream) => {
-                thread::spawn(move || {
-                    let (mut ipcmsg, mut data) = ([0u8], Vec::new());
-                    stream.read_exact(&mut ipcmsg).unwrap();
-                    match ipcmsg[0] {
-                        0 => loop {
-                            ringbuf.lock().unwrap().out(&mut data);
-                            if data.len() > 0 {
-                                if let Err(e) = stream.write_all(&data) {
-                                    eprintln!("write to stream: {}", e);
-                                    break;
-                                }
-                            }
-                        },
-                        1 => {
-                            ringbuf.lock().unwrap().out(&mut data);
-                            if let Err(e) = stream.write_all(&data) {
-                                eprintln!("write to stream: {}", e);
-                            }
-                        }
-                        _ => (),
+                loop {
+                    rx.recv().unwrap();
+                    let n = ringbuf.lock().unwrap().read_to(&mut buf);
+                    if n == 0 {
+                        continue;
                     }
-                });
+                    if let Err(_) = stream.write_all(&buf[..n]) {
+                        break;
+                    }
+                }           
             }
             Err(e) => eprintln!("{}", e),
         }
     }
 }
 
-fn readinput() {
+fn read_and_serve() {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
-    thread::spawn(move || sock_serve(rb_serv));
+    let (tx, rx) = channel::<i32>();
+    thread::spawn(move || sock_serve(rb_serv, rx));
     loop {
         let mut buf = [0u8; BUFSZ];
         match io::stdin().read(&mut buf) {
-            Ok(amount) => {
-                if amount > 0 {
-                    rb.lock().unwrap().read_from(&buf[0..amount]);
-                }
+            Ok(n) if n > 0 => {
+                rb.lock().unwrap().read_from(&buf[0..n]);
+                tx.send(0).unwrap();
             },
-            Err(_) => {
-                return
-            }
+            Ok(_) => {},
+            Err(_) => return,
         }
     }
 }
 
-fn sockclient(remotehost: &str) {
-    let mut stream = TcpStream::connect(format!("{}:19888", remotehost)).expect("connect");
-    let msg = 0u8;
-    let mut data = Vec::new();
-    if let Err(e) = stream.write(&[msg]) {
-        eprintln!("send ctrl message: {}", e);
-    }
+fn client(host: &str) {
+    let mut stream = TcpStream::connect(format!("{}:19888",host)).expect("Connection failed");
+    let mut buf = [0; BUFSZ];
+    stream.write(b"hi").unwrap();
     loop {
-        match stream.read(&mut data) {
-            Ok(n) => {
-                if n == 0 {
-                    break;
-                }
-                io::stdout().write_all(&data).unwrap();
-            },
-            Err(e) => eprintln!("read from socket err:{}",e),
-        }
+        match stream.read(&mut buf) {
+            Ok(n) if n == 0 => return,
+            Ok(n) => io::stdout().write(&buf[..n]).expect("Write failed"),
+            Err(_) => return,
+        };
     }
 }
 
@@ -153,8 +137,8 @@ fn main() {
     let host = "127.0.0.1";
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
-        readinput();
+        read_and_serve();
         return;
     }
-    sockclient(host);
+    client(host);
 }
