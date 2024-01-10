@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::process;
 use std::fs;
+use getopts::{Options,Matches};
+use ctrlc;
 extern crate getopts;
 extern crate unix_named_pipe;
 
-use getopts::Options;
 
 const BUFSZ: usize = 1024;
 
@@ -67,10 +68,10 @@ impl RingBuf {
             n = self.front-self.rear;
             data[..n].copy_from_slice(&self.buf[self.rear..self.front]);
         } else {
-            let mid = BUFSZ-self.front;
-            n = mid + self.rear;
-            data[0..mid].copy_from_slice(&self.buf[self.front..]);
-            data[mid..n].copy_from_slice(&self.buf[..self.rear]);
+            let a = BUFSZ-self.rear;
+            n = a + self.front;
+            data[..a].copy_from_slice(&self.buf[self.rear..]);
+            data[a..n].copy_from_slice(&self.buf[..self.front]);
         }
         self.front = self.rear;
         self.hasdata = false;
@@ -119,10 +120,17 @@ fn read_and_serve(input: Option<String>) {
 
     if let Some(path) = input {
         unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
-        if let Err(e) = fs::rename("rogfifo",path.as_str()) {
-            eprintln!("Move fifo errro:{}",e);
+        if let Err(e) = fs::rename("rogfifo", path.as_str()) {
+            eprintln!("Move fifo error:{}",e);
             process::exit(1);
         }
+        let delpath = path.clone();
+        ctrlc::set_handler(move || {
+            if let Err(e) = fs::remove_file(delpath.as_str()) {
+                eprintln!("failed to remove fifo:{}", e);
+            }
+            process::exit(0);
+        }).expect("Error setting Ctrl-C handler");
         loop {
             let file = fs::File::open(path.as_str()).expect("could not open fifo for reading");
             read_input(file, &tx, rb.clone());
@@ -152,8 +160,15 @@ fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>)
     }
 }
 
-fn client(host: &str) {
-    let mut stream = TcpStream::connect(format!("{}:19888",host)).expect("Connection failed");
+fn client(opts: &Matches) {
+    let host = opts.opt_str("i").unwrap_or("127.0.0.1".to_string());
+    let mut stream = match TcpStream::connect(format!("{}:19888",host)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Counld not connect to {}. Error: {}", host, e);
+            process::exit(0);
+        },
+    };
     let mut buf = [0; BUFSZ];
     loop {
         match stream.read(&mut buf) {
@@ -170,9 +185,9 @@ fn client(host: &str) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut opts = Options::new();
-    opts.optopt("i", "ip", "ip of server (for client)", "IP");
-    opts.optopt("f", "fifo", "path of fifo you want to create and read from", "PATH");
-    opts.optflag("s", "server", "run server mode");
+    opts.optopt("i", "ip", "ip of server", "HOST");
+    opts.optopt("f", "fifo", "path of fifo to create and read from instead of stdin", "PATH");
+    opts.optflag("s", "server", "server mode");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => { m },
@@ -181,20 +196,13 @@ fn main() {
             process::exit(1);
         },
     };
-
     if matches.opt_present("h") {
-        println!("rog
-    -h help
-    -i <ip> ip address of server
-    -s server mode
-    -f <path> server mode, but read from fifo instead of stdin");
+        println!("{}",opts.usage(&args[0]));
         process::exit(0);
     }
-
     if matches.opt_present("s") || matches.opt_present("f") {
         read_and_serve(matches.opt_str("f"));
         return;
     }
-    let host = matches.opt_str("i").unwrap_or("127.0.0.1".to_string());
-    client(host.as_str());
+    client(&matches);
 }
