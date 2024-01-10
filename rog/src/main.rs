@@ -92,17 +92,43 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
         let ringbuf = rb.clone();
         match stream {
             Ok(mut stream) => {
+                let mut limit;
+                let mut limiting = false;
+                match stream.read(&mut buf[..8]) {
+                    Ok(_) =>{
+                        limit = unsafe { usize::from_le_bytes(*(buf.as_ptr() as *const [u8; 8])) };
+                        if limit > 0 {
+                            limiting = true;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("read control message error:{}", e);
+                        break;
+                    },
+                }
                 loop {
                     if let Err(e) = rx.recv() {
                         eprintln!("recv error:{}", e);
                         continue;
                     }
-                    let n = ringbuf.lock().unwrap().read_to(&mut buf);
+                    let mut n = ringbuf.lock().unwrap().read_to(&mut buf);
                     if n == 0 {
                         continue;
                     }
+                    if limiting && n >= limit {
+                        n = limit;
+                    }
                     if let Err(_) = stream.write_all(&buf[..n]) {
                         break;
+                    }
+                    if limiting {
+                        limit -= n;
+                        if limit == 0 {
+                            if let Err(e) = stream.shutdown(std::net::Shutdown::Both) {
+                                eprintln!("read control message error:{}", e);
+                            }
+                            break;
+                        }
                     }
                 }           
             }
@@ -170,6 +196,11 @@ fn client(opts: &Matches) {
         },
     };
     let mut buf = [0; BUFSZ];
+    let limit: usize = opts.opt_str("l").unwrap_or("0".to_string()).parse().unwrap();
+    if let Err(e) = stream.write(&limit.to_le_bytes()) {
+        eprintln!("Counld not send control message. Error: {}", e);
+        process::exit(0);
+    }
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
@@ -187,6 +218,7 @@ fn main() {
     let mut opts = Options::new();
     opts.optopt("i", "ip", "ip of server", "HOST");
     opts.optopt("f", "fifo", "path of fifo to create and read from instead of stdin", "PATH");
+    opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optflag("s", "server", "server mode");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
