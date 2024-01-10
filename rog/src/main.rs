@@ -15,67 +15,63 @@ const BUFSZ: usize = 1024;
 
 struct RingBuf {
     buf: [u8; BUFSZ],
-    front: usize,
-    rear: usize,
-    hasdata: bool,
+    start: usize,
+    len: usize,
 }
 
 impl RingBuf {
     fn new() -> Self {
         RingBuf {
             buf: [0u8; BUFSZ],
-            front: 0,
-            rear: 0,
-            hasdata: false,
+            start: 0,
+            len: 0,
         }
     }
 
     fn read_from(&mut self, data: &[u8]) {
         let mut len = data.len();
         if len == 0 { return; }
-        let mut readstart: usize = 0;
-        if len > BUFSZ {
-            readstart = len-BUFSZ;
-            len = BUFSZ;
-        }
+        let readstart = if len > BUFSZ {
+            let rs = len-BUFSZ;
+            len = BUFSZ; rs } else { 0 };
         let source = &data[readstart..];
-        let writeamount = std::cmp::min(len, BUFSZ - self.front);
-        self.buf[self.front..self.front+writeamount].copy_from_slice(&source[..writeamount]);
-		if writeamount == len {
-			let nextfront = self.front + writeamount;
-			if self.rear > self.front && self.rear < nextfront {
-				self.rear = nextfront;
+        let tip = (self.start + self.len) % BUFSZ;
+        let write1 = std::cmp::min(len, BUFSZ - tip);
+        self.buf[tip..tip+write1].copy_from_slice(&source[..write1]);
+        if write1 == len {
+            if (tip >= self.start) || (tip + write1 < self.start) {
+                self.len = std::cmp::min(self.len + write1, BUFSZ);
+                return;
             }
-			self.front = nextfront;
-			self.hasdata = true;
-			return;
-		}
-        self.buf[..len-writeamount].copy_from_slice(&source[writeamount..]);
-        let nextfront = len - writeamount;
-        if self.rear < nextfront {
-            self.rear = nextfront;
+            self.len = BUFSZ;
+            self.start = tip + write1;
+            return;
         }
-        self.front = nextfront;
-        self.hasdata = true;
+        let left = len - write1;
+        self.buf[..left].copy_from_slice(&source[write1..]);
+        if left < self.start {
+            self.len += len;
+            return
+        }
+        self.start = tip;
+        self.len = BUFSZ;
     }
 
     fn read_to(&mut self, data: &mut [u8]) -> usize {
-        if !self.hasdata {
+        if self.len == 0 {
             return 0;
         }
-        let n;
-        if self.rear < self.front {
-            n = self.front-self.rear;
-            data[..n].copy_from_slice(&self.buf[self.rear..self.front]);
+        let part1 = BUFSZ - self.start;
+        if self.len <= part1 {
+            data[..self.len].copy_from_slice(&self.buf[self.start..self.start+self.len]);
         } else {
-            let a = BUFSZ-self.rear;
-            n = a + self.front;
-            data[..a].copy_from_slice(&self.buf[self.rear..]);
-            data[a..n].copy_from_slice(&self.buf[..self.front]);
+            data[..part1].copy_from_slice(&self.buf[self.start..]);
+            data[part1..self.len].copy_from_slice(&self.buf[..part1-self.len]);
         }
-        self.front = self.rear;
-        self.hasdata = false;
-        return n;
+        let n =self.len;
+        self.len = 0;
+        self.start = 0;
+        n
     }
 }
 
