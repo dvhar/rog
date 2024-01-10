@@ -75,7 +75,7 @@ impl RingBuf {
     }
 }
 
-fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
+fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx_from_server: Receiver<i32>, tx_to_server: Sender<bool>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(lsnr) => lsnr,
         Err(_) => {
@@ -102,12 +102,14 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                         break;
                     },
                 }
+                tx_to_server.send(true).expect("snd from client");
                 loop {
-                    if let Err(e) = rx.recv() {
+                    if let Err(e) = rx_from_server.recv() {
                         eprintln!("recv error:{}", e);
                         continue;
                     }
                     let mut n = ringbuf.lock().unwrap().read_to(&mut buf);
+                    tx_to_server.send(true).expect("snd from client");
                     if n == 0 {
                         continue;
                     }
@@ -127,6 +129,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                         }
                     }
                 }           
+                tx_to_server.send(false).expect("snd from client");
             }
             Err(e) => eprintln!("error opening stream: {}", e),
         }
@@ -137,8 +140,9 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
 fn read_and_serve(input: Option<String>) {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
-    let (tx, rx) = channel::<i32>();
-    thread::spawn(move || sock_serve(rb_serv, rx));
+    let (tx_to_client, rx_from_server) = channel::<i32>();
+    let (tx_to_server, rx_from_client) = channel::<bool>();
+    thread::spawn(move || sock_serve(rb_serv, rx_from_server, tx_to_server));
 
     if let Some(path) = input {
         unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
@@ -155,20 +159,32 @@ fn read_and_serve(input: Option<String>) {
         }).expect("Error setting Ctrl-C handler");
         loop {
             let file = fs::File::open(path.as_str()).expect("could not open fifo for reading");
-            read_input(file, &tx, rb.clone());
+            read_input(file, &tx_to_client, &rx_from_client, rb.clone());
         }
     } else {
-        read_input(io::stdin(), &tx, rb);
+        read_input(io::stdin(), &tx_to_client, &rx_from_client, rb);
     }
 }
 
-fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
+fn read_input<T: Read>(mut reader: T, tx_to_client: &Sender<i32>, rx_from_client: &Receiver<bool>, rb: Arc<Mutex<RingBuf>>) {
+    let mut has_client = false;
+    let mut buf = [0u8; BUFSZ];
     loop {
-        let mut buf = [0u8; BUFSZ];
         match reader.read(&mut buf) {
             Ok(n) if n > 0 => {
+                if has_client {
+                    if let Ok(v) = rx_from_client.recv() {
+                        eprintln!("has client1:{}", v);
+                        has_client = v;
+                    }
+                } else {
+                    if let Ok(v) = rx_from_client.try_recv() {
+                        eprintln!("has client2:{}", v);
+                        has_client = v;
+                    }
+                }
                 rb.lock().unwrap().read_from(&buf[0..n]);
-                if let Err(e) = tx.send(0) {
+                if let Err(e) = tx_to_client.send(0) {
                     eprintln!("send error:{}", e);
                     continue;
                 }
