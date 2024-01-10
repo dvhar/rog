@@ -106,7 +106,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                     }
                 }           
             }
-            Err(e) => eprintln!("{}", e),
+            Err(e) => eprintln!("error opening stream: {}", e),
         }
     }
 }
