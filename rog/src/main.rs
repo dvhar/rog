@@ -11,7 +11,7 @@ extern crate getopts;
 extern crate unix_named_pipe;
 
 
-const BUFSZ: usize = 1024;
+const BUFSZ: usize = 1024*1024;
 
 struct RingBuf {
     buf: [u8; BUFSZ],
