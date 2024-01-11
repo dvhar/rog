@@ -77,7 +77,7 @@ impl RingBuf {
 
 fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx_from_server: Receiver<i32>, tx_to_server: Sender<bool>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
-        Ok(lsnr) => lsnr,
+        Ok(l) => l,
         Err(_) => {
             eprintln!("Could not bind to port. Is a server already running?");
             process::exit(0);
@@ -85,18 +85,18 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx_from_server: Receiver<i32>, tx_to_serv
     };
     let mut buf = [0u8; BUFSZ];
     for stream in listener.incoming() {
-        let ringbuf = rb.clone();
         match stream {
             Ok(mut stream) => {
-                let mut limit;
+                let mut limit = 0;
                 let mut limiting = false;
                 match stream.read(&mut buf[..8]) {
-                    Ok(_) =>{
-                        limit = unsafe { usize::from_le_bytes(*(buf.as_ptr() as *const [u8; 8])) };
+                    Ok(n) if n == 8 => {
+                        limit = usize::from_le_bytes(||->[u8;8]{buf[..8].try_into().unwrap()}());
                         if limit > 0 {
                             limiting = true;
                         }
                     },
+                    Ok(n) => eprintln!("read control message does not have 8 bytes, has:{}", n),
                     Err(e) => {
                         eprintln!("read control message error:{}", e);
                         break;
@@ -108,7 +108,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx_from_server: Receiver<i32>, tx_to_serv
                         eprintln!("recv error:{}", e);
                         continue;
                     }
-                    let mut n = ringbuf.lock().unwrap().read_to(&mut buf);
+                    let mut n = rb.lock().unwrap().read_to(&mut buf);
                     tx_to_server.send(true).expect("snd from client");
                     if n == 0 {
                         continue;
@@ -177,11 +177,9 @@ fn read_input<T: Read>(mut reader: T, tx_to_client: &Sender<i32>, rx_from_client
                         eprintln!("has client1:{}", v);
                         has_client = v;
                     }
-                } else {
-                    if let Ok(v) = rx_from_client.try_recv() {
-                        eprintln!("has client2:{}", v);
-                        has_client = v;
-                    }
+                } else if let Ok(v) = rx_from_client.try_recv() {
+                    eprintln!("has client2:{}", v);
+                    has_client = v;
                 }
                 rb.lock().unwrap().read_from(&buf[0..n]);
                 if let Err(e) = tx_to_client.send(0) {
