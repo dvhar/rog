@@ -31,10 +31,7 @@ impl RingBuf {
     fn read_from(&mut self, data: &[u8]) {
         let mut len = data.len();
         if len == 0 { return; }
-        let readstart = if len > BUFSZ {
-            let rs = len-BUFSZ;
-            len = BUFSZ; rs } else { 0 };
-        let source = &data[readstart..];
+        let source = &data[if len>BUFSZ{let rs=len-BUFSZ;len=BUFSZ;rs}else{0}..];
         let tip = (self.start + self.len) % BUFSZ;
         let write1 = std::cmp::min(len, BUFSZ - tip);
         self.buf[tip..tip+write1].copy_from_slice(&source[..write1]);
@@ -111,7 +108,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                     if n == 0 {
                         continue;
                     }
-                    if limiting && n >= limit {
+                    if limiting && n > limit {
                         n = limit;
                     }
                     if let Err(_) = stream.write_all(&buf[..n]) {
@@ -163,8 +160,8 @@ fn read_and_serve(input: Option<String>) {
 }
 
 fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
+    let mut buf = [0u8; BUFSZ];
     loop {
-        let mut buf = [0u8; BUFSZ];
         match reader.read(&mut buf) {
             Ok(n) if n > 0 => {
                 rb.lock().unwrap().read_from(&buf[0..n]);
