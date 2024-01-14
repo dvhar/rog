@@ -1,4 +1,7 @@
-use std::io::{self, Read, Write};
+#![feature(linked_list_remove)]
+use std::io::{self, Read, Write, SeekFrom, Seek};
+use std::cell::RefCell;
+use std::collections::LinkedList;
 use std::sync::mpsc::{channel,Receiver, Sender};
 use std::net::{ TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -72,6 +75,63 @@ impl RingBuf {
     }
 }
 
+struct Client {
+    stream: TcpStream,
+    limit: usize, 
+    limited: bool,
+}
+
+impl Client {
+    fn new(s: TcpStream) -> Self {
+        Client {
+            stream: s,
+            limit: 0,
+            limited: false,
+        }
+    }
+}
+
+fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<LinkedList<Client>>>, rx: Receiver<i32>) {
+    let removed = RefCell::new(LinkedList::<usize>::new());
+    let mut buf = [0u8; BUFSZ];
+    loop {
+        if let Err(e) = rx.recv() {
+            eprintln!("recv error:{}", e);
+            continue;
+        }
+        {
+            let mut cls = clients.lock().unwrap();
+            if cls.is_empty() {
+                continue;
+            }
+            let n = rb.lock().unwrap().read_to(&mut buf);
+            if n == 0 {
+                continue;
+            }
+            for (i, cl) in cls.iter_mut().enumerate() {
+                let write_amount = if cl.limited && n >= cl.limit {
+                    removed.borrow_mut().push_back(i);
+                    cl.limit
+                } else if cl.limited {
+                    cl.limit -= n;
+                    n
+                } else {
+                    n
+                };
+                if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
+                    removed.borrow_mut().push_back(i);
+                }
+            }
+            if !removed.borrow_mut().is_empty() {
+                for i in removed.borrow_mut().iter() {
+                    cls.remove(*i);
+                }
+                removed.borrow_mut().clear();
+            }
+        }
+    }
+}
+
 fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
@@ -80,17 +140,19 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
             process::exit(0);
         },
     };
-    let mut buf = [0u8; BUFSZ];
+    let clients = Arc::new(Mutex::new(LinkedList::<Client>::new()));
+    let cls = clients.clone();
+    thread::spawn(move || write_outputs(rb, clients, rx));
+    let mut buf = [0u8; 8];
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
-                let mut limit = 0;
-                let mut limiting = false;
-                match stream.read(&mut buf[..8]) {
+            Ok(stream) => {
+                let mut client = Client::new(stream);
+                match client.stream.read(&mut buf[..8]) {
                     Ok(n) if n == 8 => {
-                        limit = usize::from_le_bytes(||->[u8;8]{buf[..8].try_into().unwrap()}());
-                        if limit > 0 {
-                            limiting = true;
+                        client.limit = usize::from_le_bytes(||->[u8;8]{buf[..8].try_into().unwrap()}());
+                        if client.limit > 0 {
+                            client.limited = true;
                         }
                     },
                     Ok(n) => eprintln!("read control message does not have 8 bytes, has:{}", n),
@@ -99,31 +161,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                         break;
                     },
                 }
-                loop {
-                    if let Err(e) = rx.recv() {
-                        eprintln!("recv error:{}", e);
-                        continue;
-                    }
-                    let mut n = rb.lock().unwrap().read_to(&mut buf);
-                    if n == 0 {
-                        continue;
-                    }
-                    if limiting && n > limit {
-                        n = limit;
-                    }
-                    if let Err(_) = stream.write_all(&buf[..n]) {
-                        break;
-                    }
-                    if limiting {
-                        limit -= n;
-                        if limit == 0 {
-                            if let Err(e) = stream.shutdown(std::net::Shutdown::Both) {
-                                eprintln!("read control message error:{}", e);
-                            }
-                            break;
-                        }
-                    }
-                }           
+                cls.lock().unwrap().push_back(client);
             }
             Err(e) => eprintln!("error opening stream: {}", e),
         }
@@ -131,28 +169,41 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
 }
 
 
-fn read_and_serve(input: Option<String>) {
+fn read_and_serve(opts: &Matches) {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
     let (tx, rx) = channel::<i32>();
     thread::spawn(move || sock_serve(rb_serv, rx));
 
-    if let Some(path) = input {
-        unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
-        if let Err(e) = fs::rename("rogfifo", path.as_str()) {
-            eprintln!("Move fifo error:{}",e);
-            process::exit(1);
-        }
-        let delpath = path.clone();
-        ctrlc::set_handler(move || {
-            if let Err(e) = fs::remove_file(delpath.as_str()) {
-                eprintln!("failed to remove fifo:{}", e);
+    let mut path = opts.opt_str("f");
+    if path == None {
+        path = opts.opt_str("t");
+    }
+
+    if let Some(path) = path {
+        if opts.opt_present("f") {
+            unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
+            if let Err(e) = fs::rename("rogfifo", path.as_str()) {
+                eprintln!("Move fifo error:{}",e);
+                process::exit(1);
             }
-            process::exit(0);
-        }).expect("Error setting Ctrl-C handler");
-        loop {
-            let file = fs::File::open(path.as_str()).expect("could not open fifo for reading");
-            read_input(file, &tx, rb.clone());
+            let delpath = path.clone();
+            ctrlc::set_handler(move || {
+                if let Err(e) = fs::remove_file(delpath.as_str()) {
+                    eprintln!("failed to remove fifo:{}", e);
+                }
+                process::exit(0);
+            }).expect("Error setting Ctrl-C handler");
+            loop {
+                let file = fs::File::open(path.as_str()).expect("could not open fifo for reading");
+                read_input(file, &tx, rb.clone());
+            }
+        } else {
+            loop {
+                let mut file = fs::File::open(path.as_str()).expect("could not open file for reading");
+                file.seek(SeekFrom::End(0)).unwrap();
+                read_input(file, &tx, rb.clone());
+            }
         }
     } else {
         read_input(io::stdin(), &tx, rb);
@@ -210,9 +261,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut opts = Options::new();
     opts.optopt("i", "ip", "ip of server", "HOST");
-    opts.optopt("f", "fifo", "path of fifo to create and read from instead of stdin", "PATH");
+    opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
+    opts.optopt("t", "file", "path of file to from instead of stdin", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
-    opts.optflag("s", "server", "server mode");
+    opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => { m },
@@ -225,8 +277,8 @@ fn main() {
         println!("{}",opts.usage(&args[0]));
         process::exit(0);
     }
-    if matches.opt_present("s") || matches.opt_present("f") {
-        read_and_serve(matches.opt_str("f"));
+    if matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t") {
+        read_and_serve(&matches);
         return;
     }
     client(&matches);
