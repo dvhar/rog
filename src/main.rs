@@ -1,7 +1,6 @@
-#![feature(linked_list_remove)]
 use std::io::{self, Read, Write, SeekFrom, Seek};
 use std::cell::RefCell;
-use std::collections::LinkedList;
+use std::vec::Vec;
 use std::sync::mpsc::{channel,Receiver, Sender};
 use std::net::{ TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -92,8 +91,8 @@ impl Client {
     }
 }
 
-fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<LinkedList<Client>>>, rx: Receiver<i32>) {
-    let removed = RefCell::new(LinkedList::<usize>::new());
+fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: Receiver<i32>) {
+    let removed = RefCell::new(Vec::<usize>::new());
     let mut buf = [0u8; BUFSZ];
     loop {
         if let Err(e) = rx.recv() {
@@ -111,7 +110,7 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<LinkedList<Client>>
             }
             for (i, cl) in cls.iter_mut().enumerate() {
                 let write_amount = if cl.limited && n >= cl.limit {
-                    removed.borrow_mut().push_back(i);
+                    removed.borrow_mut().push(i);
                     cl.limit
                 } else if cl.limited {
                     cl.limit -= n;
@@ -120,7 +119,7 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<LinkedList<Client>>
                     n
                 };
                 if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
-                    removed.borrow_mut().push_back(i);
+                    removed.borrow_mut().push(i);
                 }
             }
             if !removed.borrow_mut().is_empty() {
@@ -141,7 +140,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
             process::exit(0);
         },
     };
-    let clients = Arc::new(Mutex::new(LinkedList::<Client>::new()));
+    let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
     let cls = clients.clone();
     thread::spawn(move || write_outputs(rb, clients, rx));
     let mut buf = [0u8; 8];
@@ -162,7 +161,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                         break;
                     },
                 }
-                cls.lock().unwrap().push_back(client);
+                cls.lock().unwrap().push(client);
             }
             Err(e) => eprintln!("error opening stream: {}", e),
         }
