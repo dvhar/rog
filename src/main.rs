@@ -10,6 +10,7 @@ use std::process;
 use std::fs;
 use getopts::{Options,Matches};
 use ctrlc;
+use bat::{Input, PrettyPrinter};
 extern crate getopts;
 extern crate unix_named_pipe;
 
@@ -232,6 +233,7 @@ fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>)
 
 fn client(opts: &Matches) {
     let host = opts.opt_str("i").unwrap_or("127.0.0.1".to_string());
+    let color = opts.opt_present("c");
     let mut stream = match TcpStream::connect(format!("{}:19888",host)) {
         Ok(s) => s,
         Err(e) => {
@@ -248,7 +250,20 @@ fn client(opts: &Matches) {
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
-            Ok(n) => io::stdout().write(&buf[..n]).expect("Write failed"),
+            Ok(n) => {
+                if color {
+                    PrettyPrinter::new()
+                        .inputs(vec![
+                            Input::from_bytes(&buf[..n])
+                                .name("embedded.log")
+                                .kind("Embedded")
+                                .title("a log file")])
+                        .print()
+                        .unwrap();
+                } else {
+                    io::stdout().write(&buf[..n]).expect("Write failed");
+                }
+            },
             Err(e) => {
                 eprintln!("error reading from stream:{}", e);
                 return;
@@ -264,6 +279,7 @@ fn main() {
     opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
     opts.optopt("t", "file", "path of file to from instead of stdin", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
+    opts.optflag("c", "color", "parse syntax");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
