@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write, SeekFrom, Seek};
+//use ansi_term::Colour;
 use std::cell::RefCell;
 use std::vec::Vec;
 use std::sync::mpsc::{channel,Receiver, Sender};
@@ -9,7 +10,7 @@ use std::process;
 use std::fs;
 use getopts::{Options,Matches};
 use ctrlc;
-use bat::{Input, PrettyPrinter};
+use bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input};
 extern crate getopts;
 extern crate unix_named_pipe;
 
@@ -99,35 +100,33 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: 
             eprintln!("recv error:{}", e);
             continue;
         }
-        {
-            let mut cls = clients.lock().unwrap();
-            if cls.is_empty() {
-                continue;
+        let mut cls = clients.lock().unwrap();
+        if cls.is_empty() {
+            continue;
+        }
+        let n = rb.lock().unwrap().read_to(&mut buf);
+        if n == 0 {
+            continue;
+        }
+        for (i, cl) in cls.iter_mut().enumerate() {
+            let write_amount = if cl.limited && n >= cl.limit {
+                removed.borrow_mut().push(i);
+                cl.limit
+            } else if cl.limited {
+                cl.limit -= n;
+                n
+            } else {
+                n
+            };
+            if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
+                removed.borrow_mut().push(i);
             }
-            let n = rb.lock().unwrap().read_to(&mut buf);
-            if n == 0 {
-                continue;
+        }
+        if !removed.borrow_mut().is_empty() {
+            for i in removed.borrow_mut().iter() {
+                cls.remove(*i);
             }
-            for (i, cl) in cls.iter_mut().enumerate() {
-                let write_amount = if cl.limited && n >= cl.limit {
-                    removed.borrow_mut().push(i);
-                    cl.limit
-                } else if cl.limited {
-                    cl.limit -= n;
-                    n
-                } else {
-                    n
-                };
-                if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
-                    removed.borrow_mut().push(i);
-                }
-            }
-            if !removed.borrow_mut().is_empty() {
-                for i in removed.borrow_mut().iter() {
-                    cls.remove(*i);
-                }
-                removed.borrow_mut().clear();
-            }
+            removed.borrow_mut().clear();
         }
     }
 }
@@ -201,7 +200,9 @@ fn read_and_serve(opts: &Matches) {
         } else {
             loop {
                 let mut file = fs::File::open(path.as_str()).expect("could not open file for reading");
-                file.seek(SeekFrom::End(0)).unwrap();
+                if let Err(e) = file.seek(SeekFrom::End(0)) {
+                    eprintln!("Error seeking file:{}", e);
+                }
                 read_input(file, &tx, rb.clone());
             }
         }
@@ -243,22 +244,26 @@ fn client(opts: &Matches) {
     let mut buf = [0; BUFSZ];
     let limit: usize = opts.opt_str("l").unwrap_or("0".to_string()).parse().unwrap();
     if let Err(e) = stream.write(&limit.to_le_bytes()) {
-        eprintln!("Counld not send control message. Error: {}", e);
+        eprintln!("Could not send control message. Error: {}", e);
         process::exit(0);
     }
+    let color_config = Config {
+        colored_output: true,
+        ..Default::default()
+    };
+    let color_assets = HighlightingAssets::from_binary();
+    let color_controller = Controller::new(&color_config, &color_assets);
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
             Ok(n) => {
                 if color {
-                    PrettyPrinter::new()
-                        .inputs(vec![
-                            Input::from_bytes(&buf[..n])
-                                .name("embedded.log")
-                                .kind("Embedded")
-                                .title("a log file")])
-                        .print()
-                        .unwrap();
+                    let mut colorbuf: String = Default::default();
+                    let input = Input::from_bytes(&buf[..n]).name("dummy.log");
+                    if let Err(e) = color_controller.run(vec![input.into()], Some(&mut colorbuf)) {
+                        eprintln!("Error highlighting synatx:{}", e);
+                    }
+                    io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
                 } else {
                     io::stdout().write(&buf[..n]).expect("Write failed");
                 }
@@ -276,7 +281,7 @@ fn main() {
     let mut opts = Options::new();
     opts.optopt("i", "ip", "ip of server", "HOST");
     opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
-    opts.optopt("t", "file", "path of file to from instead of stdin", "PATH");
+    opts.optopt("t", "file", "path of file to tail", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optflag("c", "color", "parse syntax");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
