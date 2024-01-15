@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write, SeekFrom, Seek};
 //use ansi_term::Colour;
 use std::vec::Vec;
+use std::collections::HashMap;
 use std::sync::mpsc::{channel,Receiver, Sender};
 use std::net::{ TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ use std::process;
 use std::fs;
 use getopts::{Options,Matches};
 use ctrlc;
+use inotify::{Inotify,WatchMask, WatchDescriptor};
 use bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input};
 extern crate getopts;
 extern crate unix_named_pipe;
@@ -279,6 +281,67 @@ fn client(opts: &Matches) {
     }
 }
 
+fn tail(opts: &Matches) {
+    let color = opts.opt_present("c");
+    let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
+                                           Err(_) => true, _ => false, }).collect();
+    if !not_files.is_empty() {
+        eprintln!("Args are not files: {}", not_files.iter().fold(String::new(),|acc,x|acc + " " + x));
+        process::exit(0);
+    }
+    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
+    let mut files = HashMap::<WatchDescriptor,fs::File>::new();
+    let mut evbuf = [0; 1024];
+    let mut buf = [0; BUFSZ];
+    for path in opts.free.iter() {
+        match ino.watches().add(path, WatchMask::MODIFY) {
+            Ok(wd) => {
+                let mut file = match fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("Error opening file:{}", e);
+                        process::exit(1);
+                    },
+                };
+                file.seek(SeekFrom::End(0)).unwrap();
+                let _ = files.insert(wd, file);
+            },
+            Err(e) => {
+                eprintln!("Error adding watch:{}", e);
+                process::exit(0);
+            }
+        }
+    }
+    let color_config = Config {
+        colored_output: true,
+        ..Default::default()
+    };
+    let color_assets = HighlightingAssets::from_binary();
+    let color_controller = Controller::new(&color_config, &color_assets);
+    loop {
+        let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
+        for e in events {
+            if let Some(mut file) = files.get(&e.wd) {
+                let n = file.read(&mut buf).unwrap();
+                if n == 0 {
+                    eprintln!("Read zero bytes");
+                    continue;
+                }
+                if color {
+                    let mut colorbuf: String = Default::default();
+                    let input = Input::from_bytes(&buf[..n]).name("dummy.log");
+                    if let Err(e) = color_controller.run(vec![input.into()], Some(&mut colorbuf)) {
+                        eprintln!("Error highlighting synatx:{}", e);
+                    }
+                    io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
+                } else {
+                    io::stdout().write(&buf[..n]).expect("Write failed");
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut opts = Options::new();
@@ -304,5 +367,9 @@ fn main() {
         read_and_serve(&matches);
         return;
     }
-    client(&matches);
+    if matches.free.is_empty() {
+        client(&matches);
+    } else {
+        tail(&matches);
+    }
 }
