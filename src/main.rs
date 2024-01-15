@@ -1,5 +1,7 @@
 use std::io::{self, Read, Write, SeekFrom, Seek};
-//use ansi_term::Colour;
+use ansi_term::ANSIGenericString;
+use ansi_term::Colour;
+use ansi_term::Colour::*;
 use std::vec::Vec;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel,Receiver, Sender};
@@ -8,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::process;
 use std::fs;
+use std::fs::File;
 use getopts::{Options,Matches};
 use ctrlc;
 use inotify::{Inotify,WatchMask, WatchDescriptor};
@@ -199,12 +202,12 @@ fn read_and_serve(opts: &Matches) {
                 process::exit(0);
             }).expect("Error setting Ctrl-C handler");
             loop {
-                let file = fs::File::open(path.as_str()).expect("could not open fifo for reading");
+                let file = File::open(path.as_str()).expect("could not open fifo for reading");
                 read_input(file, &tx, rb.clone());
             }
         } else {
             loop {
-                let mut file = fs::File::open(path.as_str()).expect("could not open file for reading");
+                let mut file = File::open(path.as_str()).expect("could not open file for reading");
                 if let Err(e) = file.seek(SeekFrom::End(0)) {
                     eprintln!("Error seeking file:{}", e);
                 }
@@ -281,6 +284,31 @@ fn client(opts: &Matches) {
     }
 }
 
+struct Finfo {
+    name: String,
+    file: File,
+    color: Colour,
+}
+
+static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
+
+
+impl Finfo {
+    fn new(path: &str, f: File, i: usize) -> Self {
+        Finfo {
+            name: path.to_string(),
+            file: f,
+            color: COLORS[i % COLORS.len()],
+        }
+    }
+    fn colname(&mut self) -> ANSIGenericString<'_, str> {
+        self.color.paint(self.name.as_str())
+    }
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.file.read(buf)
+    }
+}
+
 fn tail(opts: &Matches) {
     let color = opts.opt_present("c");
     let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
@@ -290,13 +318,14 @@ fn tail(opts: &Matches) {
         process::exit(0);
     }
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    let mut files = HashMap::<WatchDescriptor,fs::File>::new();
+    let mut files = HashMap::<WatchDescriptor,Finfo>::new();
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
-    for path in opts.free.iter() {
+    let multi = opts.free.len() > 1;
+    for (i,path) in opts.free.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
             Ok(wd) => {
-                let mut file = match fs::File::open(path) {
+                let mut file = match File::open(path) {
                     Ok(f) => f,
                     Err(e) => {
                         eprintln!("Error opening file:{}", e);
@@ -304,7 +333,7 @@ fn tail(opts: &Matches) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, file);
+                let _ = files.insert(wd, Finfo::new(path, file, i));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
@@ -321,8 +350,8 @@ fn tail(opts: &Matches) {
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
-            if let Some(mut file) = files.get(&e.wd) {
-                let n = file.read(&mut buf).unwrap();
+            if let Some(finfo) = files.get_mut(&e.wd) {
+                let n = finfo.read(&mut buf).unwrap();
                 if n == 0 {
                     eprintln!("Read zero bytes");
                     continue;
@@ -333,9 +362,22 @@ fn tail(opts: &Matches) {
                     if let Err(e) = color_controller.run(vec![input.into()], Some(&mut colorbuf)) {
                         eprintln!("Error highlighting synatx:{}", e);
                     }
-                    io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
+                    if multi {
+                        colorbuf.lines().for_each(|line|{
+                            println!("{}:{}", finfo.colname(), line);
+                        });
+                    } else {
+                        io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
+                    }
                 } else {
-                    io::stdout().write(&buf[..n]).expect("Write failed");
+                    if multi {
+                        let s = std::str::from_utf8(&buf[..n]).unwrap();
+                        s.lines().for_each(|line|{
+                            println!("{}:{}", finfo.colname(), line);
+                        });
+                    } else {
+                        io::stdout().write(&buf[..n]).expect("Write failed");
+                    }
                 }
             }
         }
@@ -347,7 +389,7 @@ fn main() {
     let mut opts = Options::new();
     opts.optopt("i", "ip", "ip of server", "HOST");
     opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
-    opts.optopt("t", "file", "path of file to tail", "PATH");
+    opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optflag("c", "color", "parse syntax");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
@@ -360,7 +402,7 @@ fn main() {
         },
     };
     if matches.opt_present("h") {
-        println!("{}",opts.usage(&args[0]));
+        println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f");
         process::exit(0);
     }
     if matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t") {
