@@ -1,6 +1,5 @@
 use std::io::{self, Read, Write, SeekFrom, Seek};
 //use ansi_term::Colour;
-use std::cell::RefCell;
 use std::vec::Vec;
 use std::sync::mpsc::{channel,Receiver, Sender};
 use std::net::{ TcpListener, TcpStream};
@@ -93,7 +92,7 @@ impl Client {
 }
 
 fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: Receiver<i32>) {
-    let removed = RefCell::new(Vec::<usize>::new());
+    let mut removed = Vec::<usize>::new();
     let mut buf = [0u8; BUFSZ];
     loop {
         if let Err(e) = rx.recv() {
@@ -110,7 +109,7 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: 
         }
         for (i, cl) in cls.iter_mut().enumerate() {
             let write_amount = if cl.limited && n >= cl.limit {
-                removed.borrow_mut().push(i);
+                removed.push(i);
                 cl.limit
             } else if cl.limited {
                 cl.limit -= n;
@@ -119,19 +118,19 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: 
                 n
             };
             if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
-                removed.borrow_mut().push(i);
+                removed.push(i);
             }
         }
-        if !removed.borrow_mut().is_empty() {
-            for i in removed.borrow_mut().iter() {
+        if !removed.is_empty() {
+            for i in removed.iter() {
                 cls.remove(*i);
             }
-            removed.borrow_mut().clear();
+            removed.clear();
         }
     }
 }
 
-fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
+fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
         Err(_) => {
@@ -161,6 +160,9 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>) {
                     },
                 }
                 cls.lock().unwrap().push(client);
+                if let Err(e) = tx.send(0) {
+                    eprintln!("Error sending client first read channel:{}", e);
+                }
             }
             Err(e) => eprintln!("error opening stream: {}", e),
         }
@@ -172,7 +174,8 @@ fn read_and_serve(opts: &Matches) {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
     let (tx, rx) = channel::<i32>();
-    thread::spawn(move || sock_serve(rb_serv, rx));
+    let tx_serv = tx.clone();
+    thread::spawn(move || sock_serve(rb_serv, rx, tx_serv));
 
     let mut path = opts.opt_str("f");
     if path == None {
