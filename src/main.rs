@@ -66,12 +66,12 @@ impl RingBuf {
         if self.len == 0 {
             return 0;
         }
-        let part1 = BUFSZ - self.start;
-        if self.len <= part1 {
+        let part1size = BUFSZ - self.start;
+        if self.len <= part1size {
             data[..self.len].copy_from_slice(&self.buf[self.start..self.start+self.len]);
         } else {
-            data[..part1].copy_from_slice(&self.buf[self.start..]);
-            data[part1..self.len].copy_from_slice(&self.buf[..part1-self.len]);
+            data[..part1size].copy_from_slice(&self.buf[self.start..]);
+            data[part1size..self.len].copy_from_slice(&self.buf[..self.len-part1size]);
         }
         let n =self.len;
         self.len = 0;
@@ -284,7 +284,7 @@ fn client(opts: &Matches) {
     }
 }
 
-struct Finfo {
+struct FileColor {
     name: String,
     file: File,
     color: Colour,
@@ -293,19 +293,16 @@ struct Finfo {
 static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
 
 
-impl Finfo {
+impl FileColor {
     fn new(path: &str, f: File, i: usize) -> Self {
-        Finfo {
+        FileColor {
             name: path.to_string(),
             file: f,
             color: COLORS[i % COLORS.len()],
         }
     }
-    fn colname(&mut self) -> ANSIGenericString<'_, str> {
+    fn colorname(&mut self) -> ANSIGenericString<'_, str> {
         self.color.paint(self.name.as_str())
-    }
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf)
     }
 }
 
@@ -318,7 +315,7 @@ fn tail(opts: &Matches) {
         process::exit(0);
     }
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    let mut files = HashMap::<WatchDescriptor,Finfo>::new();
+    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
     let multi = opts.free.len() > 1;
@@ -333,7 +330,7 @@ fn tail(opts: &Matches) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, Finfo::new(path, file, i));
+                let _ = files.insert(wd, FileColor::new(path, file, i));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
@@ -350,11 +347,11 @@ fn tail(opts: &Matches) {
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
-            if let Some(finfo) = files.get_mut(&e.wd) {
-                let n = finfo.read(&mut buf).unwrap();
+            if let Some(filecol) = files.get_mut(&e.wd) {
+                let mut n = filecol.file.read(&mut buf).unwrap();
                 if n == 0 {
-                    eprintln!("Read zero bytes");
-                    continue;
+                    filecol.file.seek(SeekFrom::Start(0)).unwrap();
+                    n = filecol.file.read(&mut buf).unwrap();
                 }
                 if color {
                     let mut colorbuf: String = Default::default();
@@ -364,7 +361,7 @@ fn tail(opts: &Matches) {
                     }
                     if multi {
                         colorbuf.lines().for_each(|line|{
-                            println!("{}:{}", finfo.colname(), line);
+                            println!("{}:{}", filecol.colorname(), line);
                         });
                     } else {
                         io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
@@ -373,7 +370,7 @@ fn tail(opts: &Matches) {
                     if multi {
                         let s = std::str::from_utf8(&buf[..n]).unwrap();
                         s.lines().for_each(|line|{
-                            println!("{}:{}", finfo.colname(), line);
+                            println!("{}:{}", filecol.colorname(), line);
                         });
                     } else {
                         io::stdout().write(&buf[..n]).expect("Write failed");
