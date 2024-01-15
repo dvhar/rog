@@ -21,6 +21,35 @@ extern crate unix_named_pipe;
 
 const BUFSZ: usize = 1024*1024;
 
+struct Colorizer<'a> {
+    conf: bat::config::Config<'a>,
+    assets: bat::assets::HighlightingAssets,
+}
+impl<'b> Colorizer<'b> {
+    fn new<'a>() -> Colorizer<'a> {
+        Colorizer {
+            conf: Config { colored_output: true, ..Default::default() },
+            assets: HighlightingAssets::from_binary(),
+        }
+    }
+    fn string(&mut self, buf: &[u8]) -> String {
+        let controller = Controller::new(&self.conf, &self.assets);
+        let mut out = String::new();
+        let input = Input::from_bytes(buf).name("dummy.log");
+        if let Err(e) = controller.run(vec![input.into()], Some(&mut out)) {
+            eprintln!("Error highlighting synatx:{}", e);
+        }
+        out
+    }
+    fn print(&mut self, buf: &[u8]) {
+        let controller = Controller::new(&self.conf, &self.assets);
+        let input = Input::from_bytes(buf).name("dummy.log");
+        if let Err(e) = controller.run(vec![input.into()], None) {
+            eprintln!("Error highlighting synatx:{}", e);
+        }
+    }
+}
+
 struct RingBuf {
     buf: [u8; BUFSZ],
     start: usize,
@@ -39,7 +68,10 @@ impl RingBuf {
     fn read_from(&mut self, data: &[u8]) {
         let mut len = data.len();
         if len == 0 { return; }
-        let source = &data[if len>BUFSZ{let rs=len-BUFSZ;len=BUFSZ;rs}else{0}..];
+        let source = &data[if len > BUFSZ {
+            let n = len - BUFSZ;
+            len = BUFSZ;
+            n } else { 0 }..];
         let tip = (self.start + self.len) % BUFSZ;
         let write1 = std::cmp::min(len, BUFSZ - tip);
         self.buf[tip..tip+write1].copy_from_slice(&source[..write1]);
@@ -255,23 +287,13 @@ fn client(opts: &Matches) {
         eprintln!("Could not send control message. Error: {}", e);
         process::exit(0);
     }
-    let color_config = Config {
-        colored_output: true,
-        ..Default::default()
-    };
-    let color_assets = HighlightingAssets::from_binary();
-    let color_controller = Controller::new(&color_config, &color_assets);
+    let mut colorizer = Colorizer::new();
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
             Ok(n) => {
                 if color {
-                    let mut colorbuf: String = Default::default();
-                    let input = Input::from_bytes(&buf[..n]).name("dummy.log");
-                    if let Err(e) = color_controller.run(vec![input.into()], Some(&mut colorbuf)) {
-                        eprintln!("Error highlighting synatx:{}", e);
-                    }
-                    io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
+                    colorizer.print(&buf[..n]);
                 } else {
                     io::stdout().write(&buf[..n]).expect("Write failed");
                 }
@@ -284,15 +306,12 @@ fn client(opts: &Matches) {
     }
 }
 
+static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
 struct FileColor {
     name: String,
     file: File,
     color: Colour,
 }
-
-static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
-
-
 impl FileColor {
     fn new(path: &str, f: File, i: usize) -> Self {
         FileColor {
@@ -311,7 +330,7 @@ fn tail(opts: &Matches) {
     let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
                                            Err(_) => true, _ => false, }).collect();
     if !not_files.is_empty() {
-        eprintln!("Args are not files: {}", not_files.iter().fold(String::new(),|acc,x|acc + " " + x));
+        eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
         process::exit(0);
     }
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
@@ -338,12 +357,7 @@ fn tail(opts: &Matches) {
             }
         }
     }
-    let color_config = Config {
-        colored_output: true,
-        ..Default::default()
-    };
-    let color_assets = HighlightingAssets::from_binary();
-    let color_controller = Controller::new(&color_config, &color_assets);
+    let mut colorizer = Colorizer::new();
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
@@ -354,17 +368,12 @@ fn tail(opts: &Matches) {
                     n = filecol.file.read(&mut buf).unwrap();
                 }
                 if color {
-                    let mut colorbuf: String = Default::default();
-                    let input = Input::from_bytes(&buf[..n]).name("dummy.log");
-                    if let Err(e) = color_controller.run(vec![input.into()], Some(&mut colorbuf)) {
-                        eprintln!("Error highlighting synatx:{}", e);
-                    }
                     if multi {
-                        colorbuf.lines().for_each(|line|{
+                        colorizer.string(&buf[..n]).lines().for_each(|line|{
                             println!("{}:{}", filecol.colorname(), line);
                         });
                     } else {
-                        io::stdout().write(colorbuf.as_bytes()).expect("Write failed");
+                        colorizer.print(&buf[..n]);
                     }
                 } else {
                     if multi {
