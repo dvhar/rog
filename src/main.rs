@@ -1,22 +1,19 @@
-use std::io::{self, Read, Write, SeekFrom, Seek};
-use ansi_term::ANSIGenericString;
-use ansi_term::Colour;
-use ansi_term::Colour::*;
-use std::vec::Vec;
-use std::collections::HashMap;
-use std::sync::mpsc::{channel,Receiver, Sender};
-use std::net::{ TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::process;
-use std::fs;
-use std::fs::File;
-use getopts::{Options,Matches};
-use ctrlc;
-use inotify::{Inotify,WatchMask, WatchDescriptor};
-use bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input};
-extern crate getopts;
-extern crate unix_named_pipe;
+use {
+std::collections::HashMap,
+std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
+std::net::{ TcpListener, TcpStream},
+std::process,
+std::sync::mpsc::{channel, Receiver, Sender},
+std::sync::{Arc, Mutex},
+std::thread,
+std::vec::Vec,
+std::{fs,fs::File},
+ansi_term::{Colour, Colour::*},
+getopts::{Options, Matches},
+ctrlc,
+inotify::{Inotify, WatchMask, WatchDescriptor},
+bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
+};
 
 
 const BUFSZ: usize = 1024*1024;
@@ -306,27 +303,23 @@ fn client(opts: &Matches) {
     }
 }
 
-static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
 struct FileColor {
-    name: String,
     file: File,
-    color: Colour,
+    name: String,
 }
 impl FileColor {
     fn new(path: &str, f: File, i: usize) -> Self {
+        static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
         FileColor {
-            name: path.to_string(),
             file: f,
-            color: COLORS[i % COLORS.len()],
+            name: if io::stdout().is_terminal() {
+                COLORS[i % COLORS.len()].paint(path).to_string() }
+            else { path.to_string() },
         }
-    }
-    fn colorname(&mut self) -> ANSIGenericString<'_, str> {
-        self.color.paint(self.name.as_str())
     }
 }
 
 fn tail(opts: &Matches) {
-    let color = opts.opt_present("c");
     let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
                                            Err(_) => true, _ => false, }).collect();
     if !not_files.is_empty() {
@@ -335,8 +328,6 @@ fn tail(opts: &Matches) {
     }
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
     let mut files = HashMap::<WatchDescriptor,FileColor>::new();
-    let mut evbuf = [0; 1024];
-    let mut buf = [0; BUFSZ];
     let multi = opts.free.len() > 1;
     for (i,path) in opts.free.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
@@ -357,7 +348,9 @@ fn tail(opts: &Matches) {
             }
         }
     }
-    let mut colorizer = Colorizer::new();
+    let mut color = if opts.opt_present("c") { Some(Colorizer::new()) } else { None };
+    let mut evbuf = [0; 1024];
+    let mut buf = [0; BUFSZ];
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
@@ -367,19 +360,18 @@ fn tail(opts: &Matches) {
                     filecol.file.seek(SeekFrom::Start(0)).unwrap();
                     n = filecol.file.read(&mut buf).unwrap();
                 }
-                if color {
+                if let Some(ref mut colorizer) = color {
                     if multi {
                         colorizer.string(&buf[..n]).lines().for_each(|line|{
-                            println!("{}:{}", filecol.colorname(), line);
+                            println!("{}:{}", filecol.name, line);
                         });
                     } else {
                         colorizer.print(&buf[..n]);
                     }
                 } else {
                     if multi {
-                        let s = std::str::from_utf8(&buf[..n]).unwrap();
-                        s.lines().for_each(|line|{
-                            println!("{}:{}", filecol.colorname(), line);
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines().for_each(|line|{
+                            println!("{}:{}", filecol.name, line);
                         });
                     } else {
                         io::stdout().write(&buf[..n]).expect("Write failed");
