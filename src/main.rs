@@ -8,6 +8,7 @@ std::sync::{Arc, Mutex},
 std::thread,
 std::vec::Vec,
 std::{fs,fs::File},
+regex::Regex,
 ansi_term::{Colour, Colour::*},
 getopts::{Options, Matches},
 ctrlc,
@@ -348,6 +349,15 @@ fn tail(opts: &Matches) {
             }
         }
     }
+    let grep = if let Some(reg) = opts.opt_str("g") {
+        match Regex::new(reg.as_str()) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("Regex error for {}:{}", reg, e);
+                process::exit(1);
+            },
+        }
+    } else { None };
     let mut color = if opts.opt_present("c") { Some(Colorizer::new()) } else { None };
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
@@ -363,18 +373,46 @@ fn tail(opts: &Matches) {
                 if let Some(ref mut colorizer) = color {
                     if multi {
                         colorizer.string(&buf[..n]).lines().for_each(|line|{
+                            if let Some(ref re) = grep {
+                                if !re.is_match(line) {
+                                    return;
+                                }
+                            }
                             println!("{}:{}", filecol.name, line);
                         });
                     } else {
-                        colorizer.print(&buf[..n]);
+                        if let Some(ref re) = grep {
+                            colorizer.string(&buf[..n]).lines().for_each(|line|{
+                                if !re.is_match(line) {
+                                    return;
+                                }
+                                println!("{}", line);
+                            });
+                        } else {
+                            colorizer.print(&buf[..n]);
+                        }
                     }
                 } else {
                     if multi {
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines().for_each(|line|{
+                            if let Some(ref re) = grep {
+                                if !re.is_match(line) {
+                                    return;
+                                }
+                            }
                             println!("{}:{}", filecol.name, line);
                         });
                     } else {
-                        io::stdout().write(&buf[..n]).expect("Write failed");
+                        if let Some(ref re) = grep {
+                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines().for_each(|line|{
+                                if !re.is_match(line) {
+                                    return;
+                                }
+                                println!("{}", line);
+                            });
+                        } else {
+                            io::stdout().write(&buf[..n]).expect("Write failed");
+                        }
                     }
                 }
             }
@@ -389,6 +427,7 @@ fn main() {
     opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
     opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
+    opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
     opts.optflag("c", "color", "parse syntax");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");

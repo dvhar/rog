@@ -12,3 +12,4 @@ ctrlc = { version = "3.4.2", features = ["termination"] }
 bat = "0.24.0"
 inotify = "0.10.2"
 ansi_term = "0.12.1"
+regex = "1.10.2"
