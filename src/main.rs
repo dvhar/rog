@@ -126,8 +126,8 @@ impl Client {
     }
 }
 
-fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: Receiver<i32>) {
-    let mut removed = Vec::<usize>::new();
+fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>>>, rx: Receiver<i32>) {
+    let mut removed = Vec::<i64>::new();
     let mut buf = [0u8; BUFSZ];
     loop {
         if let Err(e) = rx.recv() {
@@ -142,23 +142,23 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<Vec<Client>>>, rx: 
         if n == 0 {
             continue;
         }
-        for (i, cl) in cls.iter_mut().enumerate() {
-            let write_amount = if cl.limited && n >= cl.limit {
-                removed.push(i);
-                cl.limit
-            } else if cl.limited {
-                cl.limit -= n;
+        for cl in cls.iter_mut() {
+            let write_amount = if cl.1.limited && n >= cl.1.limit {
+                removed.push(*cl.0);
+                cl.1.limit
+            } else if cl.1.limited {
+                cl.1.limit -= n;
                 n
             } else {
                 n
             };
-            if let Err(_) = cl.stream.write_all(&buf[..write_amount]) {
-                removed.push(i);
+            if let Err(_) = cl.1.stream.write_all(&buf[..write_amount]) {
+                removed.push(*cl.0);
             }
         }
         if !removed.is_empty() {
             for i in removed.iter() {
-                cls.remove(*i);
+                cls.remove(i);
             }
             removed.clear();
         }
@@ -173,11 +173,13 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
             process::exit(0);
         },
     };
-    let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
+    let clients = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
     let cls = clients.clone();
     thread::spawn(move || write_outputs(rb, clients, rx));
     let mut buf = [0u8; 8];
+    let mut client_id: i64 = 0;
     for stream in listener.incoming() {
+        client_id += 1;
         match stream {
             Ok(stream) => {
                 let mut client = Client::new(stream);
@@ -194,7 +196,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
                         break;
                     },
                 }
-                cls.lock().unwrap().push(client);
+                let _ = cls.lock().unwrap().insert(client_id, client);
                 if let Err(e) = tx.send(0) {
                     eprintln!("Error sending client first read channel:{}", e);
                 }
@@ -285,15 +287,37 @@ fn client(opts: &Matches) {
         eprintln!("Could not send control message. Error: {}", e);
         process::exit(0);
     }
+    let grep = if let Some(reg) = opts.opt_str("g") {
+        match Regex::new(reg.as_str()) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("Regex error for {}:{}", reg, e);
+                process::exit(1);
+            },
+        }
+    } else { None };
     let mut colorizer = Colorizer::new();
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
             Ok(n) => {
                 if color {
-                    colorizer.print(&buf[..n]);
+                    if let Some(ref re) = grep {
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|re.is_match(line))
+                            .map(|line| colorizer.string(line.as_bytes()))
+                            .for_each(|line| println!("{}", line));
+                    } else {
+                        colorizer.print(&buf[..n]);
+                    }
                 } else {
-                    io::stdout().write(&buf[..n]).expect("Write failed");
+                    if let Some(ref re) = grep {
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|re.is_match(line))
+                            .for_each(|line|{ println!("{}", line); });
+                    } else {
+                        io::stdout().write(&buf[..n]).expect("Write failed");
+                    }
                 }
             },
             Err(e) => {
@@ -372,44 +396,31 @@ fn tail(opts: &Matches) {
                 }
                 if let Some(ref mut colorizer) = color {
                     if multi {
-                        colorizer.string(&buf[..n]).lines().for_each(|line|{
-                            if let Some(ref re) = grep {
-                                if !re.is_match(line) {
-                                    return;
-                                }
-                            }
-                            println!("{}:{}", filecol.name, line);
-                        });
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|match grep {None=>true,Some(ref re)=>re.is_match(line)})
+                            .map(|line| colorizer.string(line.as_bytes()))
+                            .for_each(|line| println!("{}:{}", filecol.name, line));
                     } else {
                         if let Some(ref re) = grep {
-                            colorizer.string(&buf[..n]).lines().for_each(|line|{
-                                if !re.is_match(line) {
-                                    return;
-                                }
-                                println!("{}", line);
-                            });
+                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                                .filter(|line|re.is_match(line))
+                                .map(|line| colorizer.string(line.as_bytes()))
+                                .for_each(|line| println!("{}", line));
                         } else {
                             colorizer.print(&buf[..n]);
                         }
                     }
                 } else {
                     if multi {
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines().for_each(|line|{
-                            if let Some(ref re) = grep {
-                                if !re.is_match(line) {
-                                    return;
-                                }
-                            }
-                            println!("{}:{}", filecol.name, line);
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|match grep {None=>true,Some(ref re)=>re.is_match(line)})
+                            .for_each(|line|{ println!("{}:{}", filecol.name, line);
                         });
                     } else {
                         if let Some(ref re) = grep {
-                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines().for_each(|line|{
-                                if !re.is_match(line) {
-                                    return;
-                                }
-                                println!("{}", line);
-                            });
+                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                                .filter(|line|re.is_match(line))
+                                .for_each(|line|{ println!("{}", line); });
                         } else {
                             io::stdout().write(&buf[..n]).expect("Write failed");
                         }
