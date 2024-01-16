@@ -273,7 +273,6 @@ fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>)
 
 fn client(opts: &Matches) {
     let host = opts.opt_str("i").unwrap_or("127.0.0.1".to_string());
-    let color = opts.opt_present("c");
     let mut stream = match TcpStream::connect(format!("{}:19888",host)) {
         Ok(s) => s,
         Err(e) => {
@@ -296,29 +295,27 @@ fn client(opts: &Matches) {
             },
         }
     } else { None };
-    let mut colorizer = Colorizer::new();
+    let mut color = if opts.opt_present("c") { Some(Colorizer::new()) } else { None };
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
             Ok(n) => {
-                if color {
-                    if let Some(ref re) = grep {
+                match (&mut color, &grep) {
+                    (Some(ref mut colorizer), Some(ref re)) =>
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
                             .filter(|line|re.is_match(line))
                             .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}", line));
-                    } else {
-                        colorizer.print(&buf[..n]);
-                    }
-                } else {
-                    if let Some(ref re) = grep {
+                            .for_each(|line| println!("{}", line)),
+                    (Some(ref mut colorizer), None) =>
+                        colorizer.print(&buf[..n]),
+                    (None, Some(ref re)) =>
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
                             .filter(|line|re.is_match(line))
-                            .for_each(|line|{ println!("{}", line); });
-                    } else {
-                        io::stdout().write(&buf[..n]).expect("Write failed");
-                    }
-                }
+                            .for_each(|line| println!("{}", line)),
+                    (None, None) => {
+                            let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
+                    },
+                };
             },
             Err(e) => {
                 eprintln!("error reading from stream:{}", e);
@@ -394,37 +391,37 @@ fn tail(opts: &Matches) {
                     filecol.file.seek(SeekFrom::Start(0)).unwrap();
                     n = filecol.file.read(&mut buf).unwrap();
                 }
-                if let Some(ref mut colorizer) = color {
-                    if multi {
+                match (&mut color, &grep, multi) {
+                    (Some(ref mut colorizer), Some(ref re), true) =>
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|match grep {None=>true,Some(ref re)=>re.is_match(line)})
+                            .filter(|line|re.is_match(line))
                             .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}:{}", filecol.name, line));
-                    } else {
-                        if let Some(ref re) = grep {
-                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                                .filter(|line|re.is_match(line))
-                                .map(|line| colorizer.string(line.as_bytes()))
-                                .for_each(|line| println!("{}", line));
-                        } else {
-                            colorizer.print(&buf[..n]);
-                        }
-                    }
-                } else {
-                    if multi {
+                            .for_each(|line| println!("{}:{}", filecol.name, line)),
+                    (Some(ref mut colorizer), Some(ref re), false) =>
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|match grep {None=>true,Some(ref re)=>re.is_match(line)})
-                            .for_each(|line|{ println!("{}:{}", filecol.name, line);
-                        });
-                    } else {
-                        if let Some(ref re) = grep {
-                            unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                                .filter(|line|re.is_match(line))
-                                .for_each(|line|{ println!("{}", line); });
-                        } else {
-                            io::stdout().write(&buf[..n]).expect("Write failed");
-                        }
-                    }
+                            .filter(|line|re.is_match(line))
+                            .map(|line| colorizer.string(line.as_bytes()))
+                            .for_each(|line| println!("{}", line)) ,
+                    (Some(ref mut colorizer), None, true) =>
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .map(|line| colorizer.string(line.as_bytes()))
+                            .for_each(|line| println!("{}:{}", filecol.name, line)),
+                    (Some(ref mut colorizer), None, false) =>
+                        colorizer.print(&buf[..n]),
+                    (None, Some(ref re), true) =>
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|re.is_match(line))
+                            .for_each(|line| println!("{}:{}", filecol.name, line)),
+                    (None, Some(ref re), false) =>
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .filter(|line|re.is_match(line))
+                            .for_each(|line| println!("{}", line)),
+                    (None, None, true) =>
+                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
+                            .for_each(|line| println!("{}:{}", filecol.name, line)),
+                    (None, None, false) => {
+                            let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
+                    },
                 }
             }
         }
