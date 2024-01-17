@@ -24,9 +24,12 @@ struct Colorizer<'a> {
     assets: bat::assets::HighlightingAssets,
 }
 impl<'b> Colorizer<'b> {
-    fn new<'a>() -> Colorizer<'a> {
+    fn new<'a>(theme: Option<String>) -> Colorizer<'a> {
         Colorizer {
-            conf: Config { colored_output: true, ..Default::default() },
+            conf: Config {
+                colored_output: true,
+                theme: match theme { Some(s)=>s, None=>"Visual Studio Dark+".to_string() },
+                ..Default::default() },
             assets: HighlightingAssets::from_binary(),
         }
     }
@@ -295,7 +298,8 @@ fn client(opts: &Matches) {
             },
         }
     } else { None };
-    let mut color = if opts.opt_present("c") { Some(Colorizer::new()) } else { None };
+    let mut color = if opts.opt_present("c") || opts.opt_present("m") {
+        Some(Colorizer::new(opts.opt_str("m"))) } else { None };
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
@@ -313,7 +317,7 @@ fn client(opts: &Matches) {
                             .filter(|line|re.is_match(line))
                             .for_each(|line| println!("{}", line)),
                     (None, None) => {
-                            let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
+                        let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
                     },
                 };
             },
@@ -385,7 +389,8 @@ fn tail(opts: &Matches) {
             },
         }
     } else { None };
-    let mut color = if opts.opt_present("c") { Some(Colorizer::new()) } else { None };
+    let mut color = if opts.opt_present("c") || opts.opt_present("m") {
+        Some(Colorizer::new(opts.opt_str("m"))) } else { None };
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
     loop {
@@ -426,7 +431,7 @@ fn tail(opts: &Matches) {
                         unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
                             .for_each(|line| println!("{}:{}", filecol.name, line)),
                     (None, None, false) => {
-                            let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
+                        let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
                     },
                 }
             }
@@ -442,7 +447,8 @@ fn main() {
     opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
-    opts.optflag("c", "color", "parse syntax");
+    opts.optopt("m", "theme", "colorscheme", "THEME");
+    opts.optflag("c", "color", "colorscheme (default)");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
