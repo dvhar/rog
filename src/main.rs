@@ -330,12 +330,12 @@ struct FileColor {
     name: String,
 }
 impl FileColor {
-    fn new(path: &str, f: File, i: usize) -> Self {
+    fn new(path: &String, f: File, idx: usize) -> Self {
         static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
         FileColor {
             file: f,
             name: if io::stdout().is_terminal() {
-                COLORS[i % COLORS.len()].paint(path).to_string() }
+                COLORS[idx % COLORS.len()].paint(path).to_string() }
             else { path.to_string() },
         }
     }
@@ -348,9 +348,15 @@ fn tail(opts: &Matches) {
         eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
         process::exit(0);
     }
-    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
+    let prefixlen = opts.free[0].chars().enumerate().take_while(|c| {
+            opts.free.iter().all(|s| match s.chars().nth(c.0) {
+                    Some(k)=>k==c.1, None=>false})}).count();
+    let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
+    trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
     let multi = opts.free.len() > 1;
+    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
+    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
     for (i,path) in opts.free.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
             Ok(wd) => {
@@ -362,7 +368,7 @@ fn tail(opts: &Matches) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileColor::new(path, file, i));
+                let _ = files.insert(wd, FileColor::new(trimmed.iter().nth(i).unwrap(), file, i));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
