@@ -439,6 +439,143 @@ fn tail(opts: &Matches) {
     }
 }
 
+fn tail2(opts: &Matches) {
+    let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
+                                           Err(_) => true, _ => false, }).collect();
+    if !not_files.is_empty() {
+        eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
+        process::exit(0);
+    }
+    let prefixlen = opts.free[0].chars().enumerate().take_while(|c| {
+            opts.free.iter().all(|s| match s.chars().nth(c.0) {
+                    Some(k)=>k==c.1, None=>false})}).count();
+    let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
+    trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
+    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
+    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
+    for (i,path) in opts.free.iter().enumerate() {
+        match ino.watches().add(path, WatchMask::MODIFY) {
+            Ok(wd) => {
+                let mut file = match File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("Error opening file:{}", e);
+                        process::exit(1);
+                    },
+                };
+                file.seek(SeekFrom::End(0)).unwrap();
+                let _ = files.insert(wd, FileColor::new(trimmed.iter().nth(i).unwrap(), file, i));
+            },
+            Err(e) => {
+                eprintln!("Error adding watch:{}", e);
+                process::exit(0);
+            }
+        }
+    }
+    let mut evbuf = [0; 1024];
+    let mut buf = [0; BUFSZ];
+    let finder = Factory::new(opts);
+    loop {
+        let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
+        for e in events {
+            if let Some(filecol) = files.get_mut(&e.wd) {
+                let mut n = filecol.file.read(&mut buf).unwrap();
+                if n == 0 {
+                    filecol.file.seek(SeekFrom::Start(0)).unwrap();
+                    n = filecol.file.read(&mut buf).unwrap();
+                }
+                finder.getiter(unsafe { std::str::from_utf8_unchecked(&buf[..n]) })
+                    .for_each(|l|println!("{l}"));
+            }
+        }
+    }
+}
+
+
+enum LineSource<'a,'b> {
+    Regex(&'a Regex),
+    Lines(std::str::Lines<'b>),
+    NoParse,
+}
+struct LineSearcher<'a,'b> {
+    strategy: LineSource<'a,'b>,
+    buf: &'b str,
+    pos: usize,
+}
+impl<'a,'b> LineSearcher<'a,'b> {
+    fn new(strategy: LineSource<'a,'b>, buf: &'b str) -> Self {
+        LineSearcher {
+            strategy: strategy,
+            buf: buf,
+            pos: 0,
+        }
+    }
+}
+impl<'a,'b> Iterator for LineSearcher<'a,'b> {
+    type Item = &'b str;
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.strategy {
+            LineSource::Regex(r) => {
+                match r.find_at(self.buf, self.pos) {
+                    Some(m) => {
+                        let linestart = match self.buf[..m.start()].rfind('\n') {
+                            Some(i) => i,
+                            None => 0
+                        };
+                        let lineend = match self.buf[m.end()..].find('\n') {
+                            Some(i) => i+m.end(),
+                            None => self.buf.len()
+                        };
+                        self.pos = lineend;
+                        Some(&self.buf[linestart..lineend])
+                    },
+                    None => None,
+                }
+            },
+            LineSource::Lines(l) => l.next(),
+            LineSource::NoParse => {
+                if self.pos == 0 {
+                    self.pos = 1;
+                    Some(self.buf)
+                } else { None }
+            },
+        }
+    }
+}
+
+struct Factory {
+    re: Option<Regex>,
+    need_lines: bool,
+}
+
+impl Factory {
+
+    fn getiter<'a,'b>(self: &'a Self, buf: &'b str) -> LineSearcher<'a,'b> {
+        match (&self.re, self.need_lines) {
+            (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf),
+            (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf),
+            (None, false) => LineSearcher::new(LineSource::NoParse, buf),
+        }
+    }
+
+    fn new(opts: &Matches) -> Self {
+        let grep = if let Some(reg) = opts.opt_str("g") {
+            match Regex::new(reg.as_str()) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    eprintln!("Regex error for {}:{}", reg, e);
+                    process::exit(1);
+                },
+            }
+        } else { None };
+        Factory {
+            re: grep,
+            need_lines: true,
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut opts = Options::new();
@@ -469,6 +606,7 @@ fn main() {
     if matches.free.is_empty() {
         client(&matches);
     } else {
-        tail(&matches);
+        tail2(&matches);
+        //tail(&matches);
     }
 }
