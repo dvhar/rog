@@ -6,7 +6,7 @@ std::process,
 std::sync::mpsc::{channel, Receiver, Sender},
 std::sync::{Arc, Mutex},
 std::thread,
-std::vec::Vec,
+std::collections::VecDeque,
 std::{fs,fs::File},
 regex::Regex,
 ansi_term::{Colour, Colour::*},
@@ -407,38 +407,65 @@ enum LineSource<'a,'b> {
 struct LineSearcher<'a,'b> {
     strategy: LineSource<'a,'b>,
     buf: &'b str,
-    pos: usize,
+    posend: usize,
+    posstart: usize,
     parent: &'a BufParser,
-    group: Vec::<usize>,
+    group: VecDeque::<&'b str>,
 }
 impl<'a,'b> LineSearcher<'a,'b> {
     fn new(strategy: LineSource<'a,'b>, buf: &'b str, p: &'a BufParser) -> Self {
         LineSearcher {
             strategy: strategy,
             buf: buf,
-            pos: 0,
+            posend: 0,
+            posstart: 0,
             parent: p,
             group: Default::default(),
         }
     }
-    fn grep_no_ctx(&mut self) -> Option<&'b str> {
+    fn grep(&mut self) -> Option<&'b str> {
         if let LineSource::Regex(r) = self.strategy {
-            match r.find_at(self.buf, self.pos) {
+            match r.find_at(self.buf, self.posend) {
                 Some(m) => {
                     let linestart = match self.buf[..m.start()].rfind('\n') {
-                        Some(i) => i,
+                        Some(i) => i+1,
                         None => 0
                     };
                     let lineend = match self.buf[m.end()..].find('\n') {
                         Some(i) => i+m.end(),
                         None => self.buf.len()
                     };
-                    self.pos = lineend;
+                    self.posend = lineend;
+                    self.posstart = linestart;
                     Some(&self.buf[linestart..lineend])
                 },
                 None => None,
             }
         } else {None}
+    }
+    fn grep_ctx(&mut self) -> Option<&'b str> {
+        if self.group.is_empty() {
+            let found = self.grep()?;
+            self.group.push_front(found);
+            let mut begin = self.posstart-1;
+            let mut end = begin;
+            for _ in 0..self.parent.ctx.0 {
+                begin = match self.buf[..begin].rfind('\n') { Some(i) => i+1, None => 0, };
+                self.group.push_front(&self.buf[begin..end]);
+                if begin == 0 { break; }
+                begin -= 1;
+                end = begin;
+            }
+            end = self.posend+1;
+            begin = end;
+            for _ in 0..self.parent.ctx.1 {
+                end = match self.buf[end+1..].find('\n') { Some(i) => i+end+1, None => self.buf.len(), };
+                self.group.push_back(&self.buf[begin..end]);
+                if end >= self.buf.len() { break; }
+                begin = end+1;
+            }
+        }
+        self.group.pop_front()
     }
 }
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
@@ -446,12 +473,15 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.strategy {
             LineSource::Regex(_) => {
-                self.grep_no_ctx()
+                match self.parent.ctx {
+                    (0,0) => self.grep(),
+                    _ => self.grep_ctx(),
+                }
             },
             LineSource::Lines(l) => l.next(),
             LineSource::NoParse => {
-                if self.pos == 0 {
-                    self.pos = 1;
+                if self.posend == 0 {
+                    self.posend = 1;
                     Some(self.buf)
                 } else { None }
             },
@@ -491,7 +521,7 @@ impl BufParser {
         BufParser {
             re: grep,
             need_lines: true,
-            ctx: (a,b),
+            ctx: (b,a),
         }
     }
 }
