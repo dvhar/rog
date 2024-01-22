@@ -358,100 +358,6 @@ fn tail(opts: &Matches) {
     let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
     let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
     trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
-    let multi = opts.free.len() > 1;
-    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
-    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    for (i,path) in opts.free.iter().enumerate() {
-        match ino.watches().add(path, WatchMask::MODIFY) {
-            Ok(wd) => {
-                let mut file = match File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("Error opening file:{}", e);
-                        process::exit(1);
-                    },
-                };
-                file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileColor::new(trimmed.iter().nth(i).unwrap(), file, i));
-            },
-            Err(e) => {
-                eprintln!("Error adding watch:{}", e);
-                process::exit(0);
-            }
-        }
-    }
-    let grep = if let Some(reg) = opts.opt_str("g") {
-        match Regex::new(reg.as_str()) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                eprintln!("Regex error for {}:{}", reg, e);
-                process::exit(1);
-            },
-        }
-    } else { None };
-    let mut color = if opts.opt_present("c") || opts.opt_present("m") {
-        Some(Colorizer::new(opts.opt_str("m"))) } else { None };
-    let mut evbuf = [0; 1024];
-    let mut buf = [0; BUFSZ];
-    loop {
-        let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
-        for e in events {
-            if let Some(filecol) = files.get_mut(&e.wd) {
-                let mut n = filecol.file.read(&mut buf).unwrap();
-                if n == 0 {
-                    filecol.file.seek(SeekFrom::Start(0)).unwrap();
-                    n = filecol.file.read(&mut buf).unwrap();
-                }
-                match (&mut color, &grep, multi) {
-                    (Some(ref mut colorizer), Some(ref re), true) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}:{}", filecol.name, line)),
-                    (Some(ref mut colorizer), Some(ref re), false) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}", line)) ,
-                    (Some(ref mut colorizer), None, true) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}:{}", filecol.name, line)),
-                    (Some(ref mut colorizer), None, false) =>
-                        colorizer.print(&buf[..n]),
-                    (None, Some(ref re), true) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .for_each(|line| println!("{}:{}", filecol.name, line)),
-                    (None, Some(ref re), false) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .for_each(|line| println!("{}", line)),
-                    (None, None, true) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .for_each(|line| println!("{}:{}", filecol.name, line)),
-                    (None, None, false) => {
-                        let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
-                    },
-                }
-            }
-        }
-    }
-}
-
-fn tail2(opts: &Matches) {
-    let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
-                                           Err(_) => true, _ => false, }).collect();
-    if !not_files.is_empty() {
-        eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
-        process::exit(0);
-    }
-    let prefixlen = opts.free[0].chars().enumerate().take_while(|c| {
-            opts.free.iter().all(|s| match s.chars().nth(c.0) {
-                    Some(k)=>k==c.1, None=>false})}).count();
-    let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
-    trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
     let mut files = HashMap::<WatchDescriptor,FileColor>::new();
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
     for (i,path) in opts.free.iter().enumerate() {
@@ -475,7 +381,7 @@ fn tail2(opts: &Matches) {
     }
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
-    let finder = Factory::new(opts);
+    let finder = BufParser::new(opts);
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
@@ -486,7 +392,7 @@ fn tail2(opts: &Matches) {
                     n = filecol.file.read(&mut buf).unwrap();
                 }
                 finder.getiter(unsafe { std::str::from_utf8_unchecked(&buf[..n]) })
-                    .for_each(|l|println!("{l}"));
+                    .for_each(|s|println!("{}:{}", filecol.name, s));
             }
         }
     }
@@ -502,36 +408,45 @@ struct LineSearcher<'a,'b> {
     strategy: LineSource<'a,'b>,
     buf: &'b str,
     pos: usize,
+    parent: &'a BufParser,
+    group: Vec::<usize>,
 }
 impl<'a,'b> LineSearcher<'a,'b> {
-    fn new(strategy: LineSource<'a,'b>, buf: &'b str) -> Self {
+    fn new(strategy: LineSource<'a,'b>, buf: &'b str, p: &'a BufParser) -> Self {
         LineSearcher {
             strategy: strategy,
             buf: buf,
             pos: 0,
+            parent: p,
+            group: Default::default(),
         }
+    }
+    fn grep_no_ctx(&mut self) -> Option<&'b str> {
+        if let LineSource::Regex(r) = self.strategy {
+            match r.find_at(self.buf, self.pos) {
+                Some(m) => {
+                    let linestart = match self.buf[..m.start()].rfind('\n') {
+                        Some(i) => i,
+                        None => 0
+                    };
+                    let lineend = match self.buf[m.end()..].find('\n') {
+                        Some(i) => i+m.end(),
+                        None => self.buf.len()
+                    };
+                    self.pos = lineend;
+                    Some(&self.buf[linestart..lineend])
+                },
+                None => None,
+            }
+        } else {None}
     }
 }
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     type Item = &'b str;
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.strategy {
-            LineSource::Regex(r) => {
-                match r.find_at(self.buf, self.pos) {
-                    Some(m) => {
-                        let linestart = match self.buf[..m.start()].rfind('\n') {
-                            Some(i) => i,
-                            None => 0
-                        };
-                        let lineend = match self.buf[m.end()..].find('\n') {
-                            Some(i) => i+m.end(),
-                            None => self.buf.len()
-                        };
-                        self.pos = lineend;
-                        Some(&self.buf[linestart..lineend])
-                    },
-                    None => None,
-                }
+            LineSource::Regex(_) => {
+                self.grep_no_ctx()
             },
             LineSource::Lines(l) => l.next(),
             LineSource::NoParse => {
@@ -544,18 +459,19 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     }
 }
 
-struct Factory {
+struct BufParser {
     re: Option<Regex>,
     need_lines: bool,
+    ctx: (usize,usize),
 }
 
-impl Factory {
+impl BufParser {
 
     fn getiter<'a,'b>(self: &'a Self, buf: &'b str) -> LineSearcher<'a,'b> {
         match (&self.re, self.need_lines) {
-            (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf),
-            (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf),
-            (None, false) => LineSearcher::new(LineSource::NoParse, buf),
+            (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf, &self),
+            (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf, &self),
+            (None, false) => LineSearcher::new(LineSource::NoParse, buf, &self),
         }
     }
 
@@ -569,9 +485,13 @@ impl Factory {
                 },
             }
         } else { None };
-        Factory {
+        let c = opts.opt_str("C").unwrap_or("0".to_string());
+        let a: usize = opts.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
+        let b: usize = opts.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
+        BufParser {
             re: grep,
             need_lines: true,
+            ctx: (a,b),
         }
     }
 }
@@ -585,6 +505,9 @@ fn main() {
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
     opts.optopt("m", "theme", "colorscheme", "THEME");
+    opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
+    opts.optopt("A", "context", "Lines of context after grep results", "NUM");
+    opts.optopt("B", "context", "Lines of context before grep results", "NUM");
     opts.optflag("c", "color", "colorscheme (default)");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
@@ -606,7 +529,6 @@ fn main() {
     if matches.free.is_empty() {
         client(&matches);
     } else {
-        tail2(&matches);
-        //tail(&matches);
+        tail(&matches);
     }
 }
