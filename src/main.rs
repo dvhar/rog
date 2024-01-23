@@ -443,7 +443,25 @@ impl<'a,'b> LineSearcher<'a,'b> {
             }
         } else {None}
     }
-    fn grep_ctx(&mut self) -> Option<&'b str> {
+    fn grep_ctx_blob(&mut self) -> Option<&'b str> {
+        self.grep()?;
+        let mut begin = self.posstart-1;
+        for _ in 0..self.parent.ctx.0 {
+            begin = match self.buf[..begin-1].rfind('\n') { Some(i) => i+1, None => 0, };
+            if begin == 0 { break; }
+        }
+        self.posstart = begin;
+        let mut end = self.posend+1;
+        for _ in 0..self.parent.ctx.1 {
+            end = match self.buf[end+1..].find('\n') { Some(i) => i+end+1, None => self.buf.len(), };
+            if end >= self.buf.len() { break; }
+        }
+        self.posend = end;
+        if self.buf.chars().nth(end-1).unwrap() == '\n' { end -= 1; }
+        println!("FIN:'{}'",&self.buf[begin..end]);
+        Some(&self.buf[begin..end])
+    }
+    fn grep_ctx_lines(&mut self) -> Option<&'b str> {
         if self.group.is_empty() {
             let found = self.grep()?;
             self.group.push_front(found);
@@ -473,9 +491,10 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.strategy {
             LineSource::Regex(_) => {
-                match self.parent.ctx {
-                    (0,0) => self.grep(),
-                    _ => self.grep_ctx(),
+                match (self.parent.ctx, self.parent.need_lines) {
+                    ((0,0),_) => self.grep(),
+                    ((_,_),true) => self.grep_ctx_lines(),
+                    ((_,_),false) => self.grep_ctx_blob(),
                 }
             },
             LineSource::Lines(l) => l.next(),
@@ -520,7 +539,7 @@ impl BufParser {
         let b: usize = opts.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
         BufParser {
             re: grep,
-            need_lines: true,
+            need_lines: false,
             ctx: (b,a),
         }
     }
@@ -536,8 +555,8 @@ fn main() {
     opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
     opts.optopt("m", "theme", "colorscheme", "THEME");
     opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
-    opts.optopt("A", "context", "Lines of context after grep results", "NUM");
-    opts.optopt("B", "context", "Lines of context before grep results", "NUM");
+    opts.optopt("A", "after", "Lines of context after grep results", "NUM");
+    opts.optopt("B", "before", "Lines of context before grep results", "NUM");
     opts.optflag("c", "color", "colorscheme (default)");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
