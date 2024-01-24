@@ -42,13 +42,6 @@ impl<'b> Colorizer<'b> {
         }
         out
     }
-    fn print(&mut self, buf: &[u8]) {
-        let controller = Controller::new(&self.conf, &self.assets);
-        let input = Input::from_bytes(buf).name("dummy.log");
-        if let Err(e) = controller.run(vec![input.into()], None) {
-            eprintln!("Error highlighting synatx:{}", e);
-        }
-    }
 }
 
 struct RingBuf {
@@ -289,38 +282,13 @@ fn client(opts: &Matches) {
         eprintln!("Could not send control message. Error: {}", e);
         process::exit(0);
     }
-    let grep = if let Some(reg) = opts.opt_str("g") {
-        match Regex::new(reg.as_str()) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                eprintln!("Regex error for {}:{}", reg, e);
-                process::exit(1);
-            },
-        }
-    } else { None };
-    let mut color = if opts.opt_present("c") || opts.opt_present("m") {
-        Some(Colorizer::new(opts.opt_str("m"))) } else { None };
+    let dummy_name: String = Default::default();
+    let mut printer = Printer::new(opts);
+    let finder = BufParser::new(opts);
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
-            Ok(n) => {
-                match (&mut color, &grep) {
-                    (Some(ref mut colorizer), Some(ref re)) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .map(|line| colorizer.string(line.as_bytes()))
-                            .for_each(|line| println!("{}", line)),
-                    (Some(ref mut colorizer), None) =>
-                        colorizer.print(&buf[..n]),
-                    (None, Some(ref re)) =>
-                        unsafe { std::str::from_utf8_unchecked(&buf[..n]) }.lines()
-                            .filter(|line|re.is_match(line))
-                            .for_each(|line| println!("{}", line)),
-                    (None, None) => {
-                        let _ = io::stdout().write(&buf[..n]).expect("Write failed"); ()
-                    },
-                };
-            },
+            Ok(n) => finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name)),
             Err(e) => {
                 eprintln!("error reading from stream:{}", e);
                 return;
@@ -381,6 +349,7 @@ fn tail(opts: &Matches) {
     }
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
+    let mut printer = Printer::new(opts);
     let finder = BufParser::new(opts);
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
@@ -391,8 +360,7 @@ fn tail(opts: &Matches) {
                     filecol.file.seek(SeekFrom::Start(0)).unwrap();
                     n = filecol.file.read(&mut buf).unwrap();
                 }
-                finder.getiter(unsafe { std::str::from_utf8_unchecked(&buf[..n]) })
-                    .for_each(|s|println!("{}:{}", filecol.name, s));
+                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &filecol.name));
             }
         }
     }
@@ -458,7 +426,6 @@ impl<'a,'b> LineSearcher<'a,'b> {
         }
         self.posend = end;
         if self.buf.chars().nth(end-1).unwrap() == '\n' { end -= 1; }
-        println!("FIN:'{}'",&self.buf[begin..end]);
         Some(&self.buf[begin..end])
     }
     fn grep_ctx_lines(&mut self) -> Option<&'b str> {
@@ -491,7 +458,7 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.strategy {
             LineSource::Regex(_) => {
-                match (self.parent.ctx, self.parent.need_lines) {
+                match (self.parent.ctx, self.parent.print_names) {
                     ((0,0),_) => self.grep(),
                     ((_,_),true) => self.grep_ctx_lines(),
                     ((_,_),false) => self.grep_ctx_blob(),
@@ -508,23 +475,50 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     }
 }
 
+struct Printer<'c> {
+    color: Option<Colorizer<'c>>,
+    print_names: bool,
+}
+impl<'c> Printer<'c> {
+
+    fn new(opts: &Matches) -> Self {
+        let multi = opts.free.len() > 1;
+        Printer {
+            color: if opts.opt_present("c") || opts.opt_present("m") {
+                Some(Colorizer::new(opts.opt_str("m"))) } else { None },
+            print_names: multi,
+        }
+    }
+
+    fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String) {
+        match (self.print_names, &mut self.color) {
+            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes())),
+            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(chunk.as_bytes())),
+            (true,None) => println!("{}:{}", name, chunk),
+            (false,None) => println!("{}", chunk),
+        }
+    }
+}
+
+
 struct BufParser {
     re: Option<Regex>,
-    need_lines: bool,
+    print_names: bool,
     ctx: (usize,usize),
 }
 
 impl BufParser {
 
-    fn getiter<'a,'b>(self: &'a Self, buf: &'b str) -> LineSearcher<'a,'b> {
-        match (&self.re, self.need_lines) {
+    fn getiter<'a,'b>(self: &'a Self, buf: &'b [u8]) -> LineSearcher<'a,'b> {
+        let buf = unsafe { std::str::from_utf8_unchecked(buf) };
+        match (&self.re, self.print_names) {
             (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf, &self),
             (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf, &self),
             (None, false) => LineSearcher::new(LineSource::NoParse, buf, &self),
         }
     }
 
-    fn new(opts: &Matches) -> Self {
+    fn new<'a>(opts: &Matches) -> Self {
         let grep = if let Some(reg) = opts.opt_str("g") {
             match Regex::new(reg.as_str()) {
                 Ok(r) => Some(r),
@@ -537,9 +531,10 @@ impl BufParser {
         let c = opts.opt_str("C").unwrap_or("0".to_string());
         let a: usize = opts.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
         let b: usize = opts.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
+        let multi = opts.free.len() > 1;
         BufParser {
             re: grep,
-            need_lines: false,
+            print_names: multi,
             ctx: (b,a),
         }
     }
