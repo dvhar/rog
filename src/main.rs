@@ -297,19 +297,33 @@ fn client(opts: &Matches) {
     }
 }
 
-struct FileColor {
+struct FileInfo {
     file: File,
     name: String,
+    rawname: String,
+    lastsize: u64,
 }
-impl FileColor {
-    fn new(path: &String, f: File, idx: usize) -> Self {
+impl FileInfo {
+    fn new(name: &String, origpath: &String, f: File, idx: usize) -> Self {
         static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
-        FileColor {
+        let mut fi = FileInfo {
             file: f,
+            rawname: origpath.clone(),
             name: if io::stdout().is_terminal() {
-                COLORS[idx % COLORS.len()].paint(path).to_string() }
-            else { path.to_string() },
+                COLORS[idx % COLORS.len()].paint(name).to_string() }
+            else { name.to_string() },
+            lastsize: 0,
+        };
+        fi.lastsize = fi.file.metadata().unwrap().len();
+        fi
+    }
+    fn updatesize(&mut self) {
+        let newsize = self.file.metadata().unwrap().len();
+        if newsize < self.lastsize {
+            eprintln!("file {} truncated", self.rawname);
+            self.file.seek(SeekFrom::Start(0)).unwrap();
         }
+        self.lastsize = newsize;
     }
 }
 
@@ -326,7 +340,7 @@ fn tail(opts: &Matches) {
     let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
     let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
     trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
-    let mut files = HashMap::<WatchDescriptor,FileColor>::new();
+    let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
     for (i,path) in opts.free.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
@@ -339,7 +353,7 @@ fn tail(opts: &Matches) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileColor::new(trimmed.iter().nth(i).unwrap(), file, i));
+                let _ = files.insert(wd, FileInfo::new(trimmed.iter().nth(i).unwrap(), path, file, i));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
@@ -354,13 +368,13 @@ fn tail(opts: &Matches) {
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
         for e in events {
-            if let Some(filecol) = files.get_mut(&e.wd) {
-                let mut n = filecol.file.read(&mut buf).unwrap();
+            if let Some(fi) = files.get_mut(&e.wd) {
+                fi.updatesize();
+                let n = fi.file.read(&mut buf).unwrap();
                 if n == 0 {
-                    filecol.file.seek(SeekFrom::Start(0)).unwrap();
-                    n = filecol.file.read(&mut buf).unwrap();
+                    continue;
                 }
-                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &filecol.name));
+                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name));
             }
         }
     }
@@ -484,7 +498,7 @@ impl<'c> Printer<'c> {
     fn new(opts: &Matches) -> Self {
         let multi = opts.free.len() > 1;
         Printer {
-            color: if opts.opt_present("c") || opts.opt_present("m") {
+            color: if !opts.opt_present("c") || opts.opt_present("m") {
                 Some(Colorizer::new(opts.opt_str("m"))) } else { None },
             print_names: multi,
         }
@@ -493,9 +507,9 @@ impl<'c> Printer<'c> {
     fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String) {
         match (self.print_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes())),
-            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(chunk.as_bytes())),
+            (false,Some(ref mut colorizer)) => print!("{}",colorizer.string(chunk.as_bytes())),
             (true,None) => println!("{}:{}", name, chunk),
-            (false,None) => println!("{}", chunk),
+            (false,None) => print!("{}", chunk),
         }
     }
 }
@@ -552,7 +566,7 @@ fn main() {
     opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
     opts.optopt("A", "after", "Lines of context after grep results", "NUM");
     opts.optopt("B", "before", "Lines of context before grep results", "NUM");
-    opts.optflag("c", "color", "colorscheme (default)");
+    opts.optflag("c", "nocolor", "No syntax highlighting");
     opts.optflag("s", "server", "server mode, defaults to reading stdin");
     opts.optflag("h", "help", "print this help menu");
     let matches = match opts.parse(&args[1..]) {
@@ -563,7 +577,7 @@ fn main() {
         },
     };
     if matches.opt_present("h") {
-        println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f");
+        println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
         process::exit(0);
     }
     if matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t") {
