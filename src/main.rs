@@ -507,10 +507,11 @@ impl<'c> Printer<'c> {
     fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String) {
         match (self.print_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes())),
-            (false,Some(ref mut colorizer)) => print!("{}",colorizer.string(chunk.as_bytes())),
+            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(chunk.as_bytes())),
             (true,None) => println!("{}:{}", name, chunk),
-            (false,None) => print!("{}", chunk),
+            (false,None) => println!("{}", chunk),
         }
+        //io::stdout().flush().unwrap();
     }
 }
 
@@ -533,11 +534,15 @@ impl BufParser {
     }
 
     fn new<'a>(opts: &Matches) -> Self {
-        let grep = if let Some(reg) = opts.opt_str("g") {
-            match Regex::new(reg.as_str()) {
+        let pat = opts.opt_str("w").map_or(opts.opt_str("g"),|g|Some(g));
+        let grep = if let Some(reg) = pat {
+            let search = if opts.opt_present("w") {
+                format!("\\b{}\\b", reg)
+                } else { reg };
+            match Regex::new(search.as_str()) {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    eprintln!("Regex error for {}:{}", reg, e);
+                    eprintln!("Regex error for {}:{}", search, e);
                     process::exit(1);
                 },
             }
@@ -562,6 +567,7 @@ fn main() {
     opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
     opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
     opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
+    opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
     opts.optopt("m", "theme", "colorscheme", "THEME");
     opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
     opts.optopt("A", "after", "Lines of context after grep results", "NUM");
