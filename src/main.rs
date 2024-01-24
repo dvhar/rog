@@ -507,11 +507,24 @@ impl<'c> Printer<'c> {
     fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String) {
         match (self.print_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes())),
-            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(chunk.as_bytes())),
+            (false,Some(ref mut colorizer)) => {
+                if chunk.ends_with('\n') {
+                    print!("{}",colorizer.string(chunk.as_bytes()));
+                    io::stdout().flush().unwrap();
+                } else {
+                    println!("{}",colorizer.string(chunk.as_bytes()));
+                }
+            },
             (true,None) => println!("{}:{}", name, chunk),
-            (false,None) => println!("{}", chunk),
+            (false,None) => {
+                if chunk.ends_with('\n') {
+                    print!("{}", chunk);
+                    io::stdout().flush().unwrap();
+                } else {
+                    println!("{}", chunk);
+                }
+            },
         }
-        //io::stdout().flush().unwrap();
     }
 }
 
