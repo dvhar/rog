@@ -427,41 +427,52 @@ impl<'a,'b> LineSearcher<'a,'b> {
     }
     fn grep_ctx_blob(&mut self) -> Option<&'b str> {
         self.grep()?;
-        let mut begin = self.posstart-1;
-        for _ in 0..self.parent.ctx.0 {
-            begin = match self.buf[..begin-1].rfind('\n') { Some(i) => i+1, None => 0, };
-            if begin == 0 { break; }
+        let buf = self.buf.as_bytes();
+        let mut c0 = self.parent.ctx.0;
+        let mut begin = self.posstart;
+        while c0 > 0 && begin > 0 {
+            if buf[begin-1] == '\n' as u8 { begin -= 1; continue; }
+            c0 -= 1;
+            begin = match self.buf[..begin].rfind('\n') { Some(i) => i, None => 0, };
         }
-        self.posstart = begin;
-        let mut end = self.posend+1;
-        for _ in 0..self.parent.ctx.1 {
-            end = match self.buf[end+1..].find('\n') { Some(i) => i+end+1, None => self.buf.len(), };
-            if end >= self.buf.len() { break; }
+        if begin < buf.len() && buf[begin] == '\n' as u8 { begin += 1; }
+        let mut c1 = self.parent.ctx.1;
+        let mut end = self.posend;
+        while c1 > 0 && end < buf.len() {
+            if buf[end] == '\n' as u8 { end += 1; continue; }
+            c1 -= 1;
+            end = match self.buf[end..].find('\n') { Some(i) => i+end, None => buf.len(), };
         }
+        if end > 0 && buf[end-1] == '\n' as u8 { end -= 1; }
         self.posend = end;
-        if self.buf.chars().nth(end-1).unwrap() == '\n' { end -= 1; }
         Some(&self.buf[begin..end])
     }
     fn grep_ctx_lines(&mut self) -> Option<&'b str> {
         if self.group.is_empty() {
             let found = self.grep()?;
             self.group.push_front(found);
-            let mut begin = self.posstart-1;
+            let buf = self.buf.as_bytes();
+            let mut c0 = self.parent.ctx.0;
+            let mut begin = self.posstart;
             let mut end = begin;
-            for _ in 0..self.parent.ctx.0 {
+            while c0 > 0 && begin > 0 {
+                if buf[begin-1] == '\n' as u8 { begin -= 1; end = begin; continue; }
+                c0 -= 1;
                 begin = match self.buf[..begin].rfind('\n') { Some(i) => i+1, None => 0, };
                 self.group.push_front(&self.buf[begin..end]);
-                if begin == 0 { break; }
-                begin -= 1;
+                if begin > 0 {
+                    begin -= 1;
+                }
                 end = begin;
             }
-            end = self.posend+1;
+            end = self.posend;
             begin = end;
-            for _ in 0..self.parent.ctx.1 {
-                end = match self.buf[end+1..].find('\n') { Some(i) => i+end+1, None => self.buf.len(), };
+            let mut c1 = self.parent.ctx.1;
+            while c1 > 0 && end < buf.len() {
+                if buf[end] == '\n' as u8 { end += 1; begin = end; continue; }
+                c1 -= 1;
+                end = match self.buf[end..].find('\n') { Some(i) => i+end, None => buf.len(), };
                 self.group.push_back(&self.buf[begin..end]);
-                if end >= self.buf.len() { break; }
-                begin = end+1;
             }
         }
         self.group.pop_front()
