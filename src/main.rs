@@ -357,12 +357,16 @@ fn tail(opts: &mut Opts) {
         eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
         process::exit(0);
     }
-    let prefixlen = opts.argv[0].chars().enumerate().take_while(|c| {
-            opts.argv.iter().all(|s| match s.chars().nth(c.0) {
-                    Some(k)=>k==c.1, None=>false})}).count();
-    let mut trimmed: Vec<String> = opts.argv.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
-    trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
+    let prefixlen = if opts.oldstyle { 0 } else {
+        opts.argv[0].chars().enumerate().take_while(|c| {
+            opts.argv.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
+    let mut formatted_names: Vec<String> = opts.argv.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
+    if opts.oldstyle {
+        formatted_names = formatted_names.iter().map(|s|format!("================> {} <==============", s)).collect();
+    } else {
+        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
+    }
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
     for (i,path) in opts.argv.iter().enumerate() {
@@ -376,7 +380,7 @@ fn tail(opts: &mut Opts) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileInfo::new(trimmed.iter().nth(i).unwrap(), path, file, i));
+                let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
@@ -525,7 +529,9 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
 
 struct Printer<'c> {
     color: Option<Colorizer<'c>>,
-    print_names: bool,
+    inline_names: bool,
+    header_names: bool,
+    prev_idx: usize,
 }
 impl<'c> Printer<'c> {
 
@@ -536,12 +542,21 @@ impl<'c> Printer<'c> {
                 Some(theme) => Some(Colorizer::new(mem::take(theme))),
                 None => None,
             },
-            print_names: multi,
+            inline_names: !opts.oldstyle && multi,
+            header_names: opts.oldstyle && multi,
+            prev_idx: 1000,
         }
     }
 
     fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String, idx: Option<usize>) {
-        match (self.print_names, &mut self.color) {
+        match (self.header_names,idx) {
+            (true,Some(i)) if i != self.prev_idx => {
+                println!("\n  {}", name); 
+                self.prev_idx = i;
+            },
+            (_,_) => {},
+        }
+        match (self.inline_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes(), idx)),
             (false,Some(ref mut colorizer)) => {
                 if chunk.ends_with('\n') {
@@ -614,6 +629,7 @@ struct Opts {
     actx: usize,
     bctx: usize,
     server: bool,
+    oldstyle: bool,
     argv: Vec<String>,
 }
 impl Opts {
@@ -632,6 +648,7 @@ impl Opts {
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
         opts.optflag("c", "nocolor", "No syntax highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
+        opts.optflag("b", "break", "put file name in a line break between chunks rather than on the side");
         opts.optflag("h", "help", "print this help menu");
         let mut matches = match opts.parse(&args[1..]) {
             Ok(m) => { m },
@@ -662,6 +679,7 @@ impl Opts {
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
+            oldstyle: matches.opt_present("b"),
             argv: mem::take(&mut matches.free),
         }
     }
