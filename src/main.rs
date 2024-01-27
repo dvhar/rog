@@ -3,6 +3,7 @@ std::collections::HashMap,
 std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
 std::net::{ TcpListener, TcpStream},
 std::process,
+std::mem,
 std::sync::mpsc::{channel, Receiver, Sender},
 std::sync::{Arc, Mutex},
 std::thread,
@@ -10,7 +11,7 @@ std::collections::VecDeque,
 std::{fs,fs::File},
 regex::Regex,
 ansi_term::{Colour, Colour::*},
-getopts::{Options, Matches},
+getopts::Options,
 ctrlc,
 inotify::{Inotify, WatchMask, WatchDescriptor},
 bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
@@ -40,11 +41,11 @@ struct Colorizer<'a> {
     assets: bat::assets::HighlightingAssets,
 }
 impl<'b> Colorizer<'b> {
-    fn new<'a>(theme: Option<String>) -> Colorizer<'a> {
+    fn new<'a>(theme: String) -> Colorizer<'a> {
         Colorizer {
             conf: Config {
                 colored_output: true,
-                theme: match theme { Some(s)=>s, None=>"Visual Studio Dark+".to_string() },
+                theme: theme,
                 ..Default::default() },
             assets: HighlightingAssets::from_binary(),
         }
@@ -222,20 +223,15 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
 }
 
 
-fn read_and_serve(opts: &Matches) {
+fn read_and_serve(opts: &Opts) {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
     let (tx, rx) = channel::<i32>();
     let tx_serv = tx.clone();
     thread::spawn(move || sock_serve(rb_serv, rx, tx_serv));
 
-    let mut path = opts.opt_str("f");
-    if path == None {
-        path = opts.opt_str("t");
-    }
-
-    if let Some(path) = path {
-        if opts.opt_present("f") {
+    if let Some(path) = &opts.srvpath {
+        if opts.fifo {
             unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
             if let Err(e) = fs::rename("rogfifo", path.as_str()) {
                 eprintln!("Move fifo error:{}",e);
@@ -286,18 +282,16 @@ fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>)
     }
 }
 
-fn client(opts: &Matches) {
-    let host = opts.opt_str("i").unwrap_or("127.0.0.1".to_string());
-    let mut stream = match TcpStream::connect(format!("{}:19888",host)) {
+fn client(opts: &mut Opts) {
+    let mut stream = match TcpStream::connect(format!("{}:19888",opts.host)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Counld not connect to {}. Error: {}", host, e);
+            eprintln!("Counld not connect to {}. Error: {}", opts.host, e);
             process::exit(0);
         },
     };
     let mut buf = [0; BUFSZ];
-    let limit: usize = opts.opt_str("l").unwrap_or("0".to_string()).parse().unwrap();
-    if let Err(e) = stream.write(&limit.to_le_bytes()) {
+    if let Err(e) = stream.write(&opts.limit.to_le_bytes()) {
         eprintln!("Could not send control message. Error: {}", e);
         process::exit(0);
     }
@@ -348,22 +342,22 @@ impl FileInfo {
     }
 }
 
-fn tail(opts: &Matches) {
-    let not_files: Vec<&String> = opts.free.iter().filter(|path| match fs::metadata(path) {
+fn tail(opts: &mut Opts) {
+    let not_files: Vec<&String> = opts.argv.iter().filter(|path| match fs::metadata(path) {
                                            Err(_) => true, _ => false, }).collect();
     if !not_files.is_empty() {
         eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
         process::exit(0);
     }
-    let prefixlen = opts.free[0].chars().enumerate().take_while(|c| {
-            opts.free.iter().all(|s| match s.chars().nth(c.0) {
+    let prefixlen = opts.argv[0].chars().enumerate().take_while(|c| {
+            opts.argv.iter().all(|s| match s.chars().nth(c.0) {
                     Some(k)=>k==c.1, None=>false})}).count();
-    let mut trimmed: Vec<String> = opts.free.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    let mut trimmed: Vec<String> = opts.argv.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
     let maxlen = trimmed.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
     trimmed = trimmed.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    for (i,path) in opts.free.iter().enumerate() {
+    for (i,path) in opts.argv.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
             Ok(wd) => {
                 let mut file = match File::open(path) {
@@ -527,11 +521,13 @@ struct Printer<'c> {
 }
 impl<'c> Printer<'c> {
 
-    fn new(opts: &Matches) -> Self {
-        let multi = opts.free.len() > 1;
+    fn new(opts: &mut Opts) -> Self {
+        let multi = opts.argv.len() > 1;
         Printer {
-            color: if !opts.opt_present("c") || opts.opt_present("m") {
-                Some(Colorizer::new(opts.opt_str("m"))) } else { None },
+            color: match &mut opts.theme {
+                Some(theme) => Some(Colorizer::new(mem::take(theme))),
+                None => None,
+            },
             print_names: multi,
         }
     }
@@ -580,12 +576,11 @@ impl BufParser {
         }
     }
 
-    fn new<'a>(opts: &Matches) -> Self {
-        let pat = opts.opt_str("w").map_or(opts.opt_str("g"),|g|Some(g));
-        let grep = if let Some(reg) = pat {
-            let search = if opts.opt_present("w") {
+    fn new<'a>(opts: &mut Opts) -> Self {
+        let grep = if let Some(ref mut reg) = opts.grep {
+            let search = if opts.word {
                 format!("\\b{}\\b", reg)
-                } else { reg };
+                } else { mem::take(reg) };
             match Regex::new(search.as_str()) {
                 Ok(r) => Some(r),
                 Err(e) => {
@@ -594,52 +589,85 @@ impl BufParser {
                 },
             }
         } else { None };
-        let c = opts.opt_str("C").unwrap_or("0".to_string());
-        let a: usize = opts.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
-        let b: usize = opts.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C opts must be positive integers");
-        let multi = opts.free.len() > 1;
         BufParser {
             re: grep,
-            print_names: multi,
-            ctx: (b,a),
+            print_names: opts.argv.len() > 1,
+            ctx: (opts.bctx,opts.actx),
+        }
+    }
+}
+
+struct Opts {
+    host: String,
+    fifo: bool,
+    srvpath: Option<String>,
+    grep: Option<String>,
+    word: bool,
+    limit: usize,
+    theme: Option<String>,
+    actx: usize,
+    bctx: usize,
+    server: bool,
+    argv: Vec<String>,
+}
+impl Opts {
+    fn new() -> Self {
+        let args: Vec<String> = std::env::args().collect();
+        let mut opts = Options::new();
+        opts.optopt("i", "ip", "ip of server", "HOST");
+        opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
+        opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
+        opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
+        opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
+        opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
+        opts.optopt("m", "theme", "colorscheme", "THEME");
+        opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
+        opts.optopt("A", "after", "Lines of context after grep results", "NUM");
+        opts.optopt("B", "before", "Lines of context before grep results", "NUM");
+        opts.optflag("c", "nocolor", "No syntax highlighting");
+        opts.optflag("s", "server", "server mode, defaults to reading stdin");
+        opts.optflag("h", "help", "print this help menu");
+        let mut matches = match opts.parse(&args[1..]) {
+            Ok(m) => { m },
+            Err(e) => {
+                eprintln!("bad args:{}", e);
+                process::exit(1);
+            },
+        };
+        if matches.opt_present("h") {
+            println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
+            process::exit(0);
+        }
+        let color = match (matches.opt_present("c"), matches.opt_present("m")) {
+            (true,true) => panic!("Cannot use 'c' with 'm'"),
+            (true,false) => None,
+            (false,true) => matches.opt_str("m"),
+            (false,false) =>  Some("Visual Studio Dark+".to_string()),
+        };
+        let c = matches.opt_str("C").unwrap_or("0".to_string());
+        Opts {
+            host: matches.opt_str("i").unwrap_or("127.0.0.1".to_string()),
+            fifo: matches.opt_present("f"),
+            srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
+            grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
+            word: matches.opt_present("w"),
+            limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
+            theme: color,
+            actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
+            bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
+            server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
+            argv: mem::take(&mut matches.free),
         }
     }
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let mut opts = Options::new();
-    opts.optopt("i", "ip", "ip of server", "HOST");
-    opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
-    opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
-    opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
-    opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
-    opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
-    opts.optopt("m", "theme", "colorscheme", "THEME");
-    opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
-    opts.optopt("A", "after", "Lines of context after grep results", "NUM");
-    opts.optopt("B", "before", "Lines of context before grep results", "NUM");
-    opts.optflag("c", "nocolor", "No syntax highlighting");
-    opts.optflag("s", "server", "server mode, defaults to reading stdin");
-    opts.optflag("h", "help", "print this help menu");
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => { m },
-        Err(e) => {
-            eprintln!("bad args:{}", e);
-            process::exit(1);
-        },
-    };
-    if matches.opt_present("h") {
-        println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
-        process::exit(0);
-    }
-    if matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t") {
-        read_and_serve(&matches);
-        return;
-    }
-    if matches.free.is_empty() {
-        client(&matches);
+    let mut opts = Opts::new();
+    if opts.server {
+        read_and_serve(&opts);
+    } else if opts.argv.is_empty() {
+        client(&mut opts);
     } else {
-        tail(&matches);
+        tail(&mut opts);
     }
 }
