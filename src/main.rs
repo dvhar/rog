@@ -18,6 +18,22 @@ bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input}
 
 
 const BUFSZ: usize = 1024*1024;
+const THEMES: [&'static str; 15] = [
+ "Visual Studio Dark+",
+ "Nord",
+ "1337",
+ "Monokai Extended",
+ "Coldark-Dark",
+ "DarkNeon",
+ "Dracula",
+ "OneHalfDark",
+ "Solarized (dark)",
+ "Sublime Snazzy",
+ "TwoDark",
+ "ansi",
+ "base16",
+ "gruvbox-dark",
+ "zenburn"];
 
 struct Colorizer<'a> {
     conf: bat::config::Config<'a>,
@@ -33,7 +49,10 @@ impl<'b> Colorizer<'b> {
             assets: HighlightingAssets::from_binary(),
         }
     }
-    fn string(&mut self, buf: &[u8]) -> String {
+    fn string(&mut self, buf: &[u8], theme: Option<String>) -> String {
+        if let Some(th) = theme {
+            self.conf.theme = th;
+        }
         let controller = Controller::new(&self.conf, &self.assets);
         let mut out = String::new();
         let input = Input::from_bytes(buf).name("dummy.log");
@@ -288,7 +307,7 @@ fn client(opts: &Matches) {
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
-            Ok(n) => finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name)),
+            Ok(n) => finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None)),
             Err(e) => {
                 eprintln!("error reading from stream:{}", e);
                 return;
@@ -302,6 +321,7 @@ struct FileInfo {
     name: String,
     rawname: String,
     lastsize: u64,
+    idx: usize,
 }
 impl FileInfo {
     fn new(name: &String, origpath: &String, f: File, idx: usize) -> Self {
@@ -313,6 +333,7 @@ impl FileInfo {
                 COLORS[idx % COLORS.len()].paint(name).to_string() }
             else { name.to_string() },
             lastsize: 0,
+            idx: idx,
         };
         fi.lastsize = fi.file.metadata().unwrap().len();
         fi
@@ -374,7 +395,7 @@ fn tail(opts: &Matches) {
                 if n == 0 {
                     continue;
                 }
-                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name));
+                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
             }
         }
     }
@@ -515,15 +536,17 @@ impl<'c> Printer<'c> {
         }
     }
 
-    fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String) {
+    fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String, idx: Option<usize>) {
+        let idx = idx.unwrap_or(0) % THEMES.len();
+        let s = THEMES[idx].to_string();
         match (self.print_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes())),
+            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes(), Some(s))),
             (false,Some(ref mut colorizer)) => {
                 if chunk.ends_with('\n') {
-                    print!("{}",colorizer.string(chunk.as_bytes()));
+                    print!("{}",colorizer.string(chunk.as_bytes(), Some(s)));
                     io::stdout().flush().unwrap();
                 } else {
-                    println!("{}",colorizer.string(chunk.as_bytes()));
+                    println!("{}",colorizer.string(chunk.as_bytes(), Some(s)));
                 }
             },
             (true,None) => println!("{}:{}", name, chunk),
