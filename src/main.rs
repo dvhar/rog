@@ -39,6 +39,8 @@ const THEMES: [&'static str; 15] = [
 struct Colorizer<'a> {
     conf: bat::config::Config<'a>,
     assets: bat::assets::HighlightingAssets,
+    themes: [String; 15],
+    idx: usize,
 }
 impl<'b> Colorizer<'b> {
     fn new<'a>(theme: String) -> Colorizer<'a> {
@@ -48,11 +50,17 @@ impl<'b> Colorizer<'b> {
                 theme: theme,
                 ..Default::default() },
             assets: HighlightingAssets::from_binary(),
+            themes: THEMES.map(|s|s.to_string()),
+            idx: 0,
         }
     }
-    fn string(&mut self, buf: &[u8], theme: Option<String>) -> String {
-        if let Some(th) = theme {
-            self.conf.theme = th;
+    fn string(&mut self, buf: &[u8], theme: Option<usize>) -> String {
+        if let Some(idx) = theme {
+            if idx != self.idx {
+                mem::swap(&mut self.conf.theme, &mut self.themes[self.idx]);
+                mem::swap(&mut self.conf.theme, &mut self.themes[idx]);
+                self.idx = idx;
+            }
         }
         let controller = Controller::new(&self.conf, &self.assets);
         let mut out = String::new();
@@ -533,16 +541,14 @@ impl<'c> Printer<'c> {
     }
 
     fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String, idx: Option<usize>) {
-        let idx = idx.unwrap_or(0) % THEMES.len();
-        let s = THEMES[idx].to_string();
         match (self.print_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes(), Some(s))),
+            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes(), idx)),
             (false,Some(ref mut colorizer)) => {
                 if chunk.ends_with('\n') {
-                    print!("{}",colorizer.string(chunk.as_bytes(), Some(s)));
+                    print!("{}",colorizer.string(chunk.as_bytes(), idx));
                     io::stdout().flush().unwrap();
                 } else {
-                    println!("{}",colorizer.string(chunk.as_bytes(), Some(s)));
+                    println!("{}",colorizer.string(chunk.as_bytes(), idx));
                 }
             },
             (true,None) => println!("{}:{}", name, chunk),
