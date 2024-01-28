@@ -10,6 +10,7 @@ std::thread,
 std::collections::VecDeque,
 std::{fs,fs::File},
 regex::Regex,
+termsize,
 ansi_term::{Colour, Colour::*},
 getopts::Options,
 ctrlc,
@@ -64,7 +65,7 @@ impl<'b> Colorizer<'b> {
         }
         let controller = Controller::new(&self.conf, &self.assets);
         let mut out = String::new();
-        let input = Input::from_bytes(buf).name("dummy.log");
+        let input = Input::from_bytes(buf).name("a.log");
         if let Err(e) = controller.run(vec![input.into()], Some(&mut out)) {
             eprintln!("Error highlighting synatx:{}", e);
         }
@@ -77,6 +78,7 @@ struct Printer<'c> {
     inline_names: bool,
     header_names: bool,
     prev_idx: usize,
+    width: usize,
 }
 impl<'c> Printer<'c> {
 
@@ -90,18 +92,22 @@ impl<'c> Printer<'c> {
             inline_names: !opts.oldstyle && multi,
             header_names: opts.oldstyle && multi,
             prev_idx: 1000,
+            width: opts.width,
         }
     }
 
     fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, idx: Option<usize>) {
-        let out = match chunk {
+        let mut out = match chunk {
             LineOut::Ref(r) => r,
             LineOut::Str(ref s) => s.as_str(),
         };
-        //test a little more before removing
-        //if out.ends_with('\n') {
-            //out = &out[..out.len()-1];
-        //}
+        if self.width > 0 {
+            let mut idx = self.width.min(out.len());
+            while idx < out.len() && (out.as_bytes()[idx] & 0b11000000) == 0b10000000 {
+                idx += 1;
+            }
+            out = &out[..idx];
+        }
         match (self.header_names,idx) {
             (true,Some(i)) if i != self.prev_idx => {
                 println!("\n  {}", name); 
@@ -141,11 +147,11 @@ impl RingBuf {
             len = BUFSZ;
             n } else { 0 }..];
         let tip = (self.start + self.len) % BUFSZ;
-        let write1 = std::cmp::min(len, BUFSZ - tip);
+        let write1 = len.min(BUFSZ - tip);
         self.buf[tip..tip+write1].copy_from_slice(&source[..write1]);
         if write1 == len {
             if (tip >= self.start) || (tip + write1 < self.start) {
-                self.len = std::cmp::min(self.len + write1, BUFSZ);
+                self.len = BUFSZ.min(self.len + write1);
                 return;
             }
             self.len = BUFSZ;
@@ -411,6 +417,9 @@ fn tail(opts: &mut Opts) {
     if opts.oldstyle {
         formatted_names = formatted_names.iter().map(|s|format!("================> {} <==============", s)).collect();
     } else {
+        if opts.termfit && opts.width > maxlen+1 {
+            opts.width -= maxlen+1
+        };
         formatted_names = formatted_names.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
     }
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
@@ -647,9 +656,10 @@ impl BufParser {
             csv.split(',').map(|name| Regex::new(format!("\\b{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
                                .expect("Could not parse field name into regex")).collect()
         } else { Vec::new() };
+        let need_lines = opts.fields != None || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
         BufParser {
             grep,
-            need_lines: opts.tailfiles.len() > 1 || opts.fields != None,
+            need_lines: need_lines,
             ctx: (opts.bctx,opts.actx),
             rem_fields: fields,
         }
@@ -663,6 +673,8 @@ struct Opts {
     grep: Option<String>,
     word: bool,
     limit: usize,
+    width: usize,
+    termfit: bool,
     theme: Option<String>,
     fields: Option<String>,
     actx: usize,
@@ -679,6 +691,7 @@ impl Opts {
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
         opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
         opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
+        opts.optopt("o", "width", "limit number of bytes per row", "NUM");
         opts.optopt("r", "remove", "remove fields of the format field=value or field=\"value with spaces\"", "F1,F2,F3...");
         opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
         opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
@@ -686,6 +699,7 @@ impl Opts {
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
+        opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("b", "break", "put file name in a line break between chunks rather than on the side");
@@ -708,6 +722,12 @@ impl Opts {
             (false,false) =>  Some("Visual Studio Dark+".to_string()),
         };
         let c = matches.opt_str("C").unwrap_or("0".to_string());
+        let width = if matches.opt_present("u") {
+            let termsize::Size { cols, .. } = termsize::get().unwrap();
+            cols as usize
+        } else {
+            matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
+        };
         Opts {
             host: matches.opt_str("i").unwrap_or("127.0.0.1".to_string()),
             fifo: matches.opt_present("f"),
@@ -715,6 +735,8 @@ impl Opts {
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
             word: matches.opt_present("w"),
             limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
+            width: width,
+            termfit: matches.opt_present("u"),
             theme: color,
             fields: matches.opt_str("r"),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
