@@ -408,6 +408,10 @@ fn tail(opts: &mut Opts) {
 }
 
 
+enum LineOut<'b> {
+    Ref(&'b str),
+    Str(String),
+}
 enum LineSource<'a,'b> {
     Regex(&'a Regex),
     Lines(std::str::Lines<'b>),
@@ -421,6 +425,7 @@ struct LineSearcher<'a,'b> {
     parent: &'a BufParser,
     group: VecDeque::<&'b str>,
 }
+
 impl<'a,'b> LineSearcher<'a,'b> {
     fn new(strategy: LineSource<'a,'b>, buf: &'b str, p: &'a BufParser) -> Self {
         LineSearcher {
@@ -432,6 +437,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
             group: Default::default(),
         }
     }
+
     fn grep(&mut self) -> Option<&'b str> {
         if let LineSource::Regex(r) = self.strategy {
             match r.find_at(self.buf, self.posend) {
@@ -452,6 +458,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
             }
         } else {None}
     }
+
     fn grep_ctx_blob(&mut self) -> Option<&'b str> {
         self.grep()?;
         let buf = self.buf.as_bytes();
@@ -474,6 +481,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
         self.posend = end;
         Some(&self.buf[begin..end])
     }
+
     fn grep_ctx_lines(&mut self) -> Option<&'b str> {
         if self.group.is_empty() {
             let found = self.grep()?;
@@ -504,11 +512,40 @@ impl<'a,'b> LineSearcher<'a,'b> {
         }
         self.group.pop_front()
     }
+
+    fn remove_fields(&self, chunk: Option<&'b str>) -> Option<LineOut<'b>> {
+        if chunk == None {
+            return None
+        }
+        if self.parent.remfields.len() == 0 {
+            return Some(LineOut::Ref(chunk.unwrap()))
+        }
+        let txt = chunk.unwrap();
+        let mut fields = self.parent.remfields.iter()
+            .map(|re| re.find(txt))
+            .filter(|m| m != &None)
+            .map(|m| { let m = m.unwrap(); (m.start(), m.end())})
+            .collect::<Vec<_>>();
+        if fields.len() == 0 {
+            return Some(LineOut::Ref(chunk.unwrap()))
+        }
+        fields.sort_by(|a,b| a.0.cmp(&b.0));
+        let mut result = String::new();
+        let mut start: usize = 0;
+        fields.iter().for_each(|pos| {
+            if start <= pos.0 {
+                result += &txt[start..pos.0];
+                start = pos.1;
+            }
+        });
+        result += &txt[start..];
+        Some(LineOut::Str(result))
+    }
 }
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
-    type Item = &'b str;
+    type Item = LineOut<'b>;
     fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.strategy {
+        let res = match &mut self.strategy {
             LineSource::Regex(_) => {
                 match (self.parent.ctx, self.parent.print_names) {
                     ((0,0),_) => self.grep(),
@@ -523,7 +560,8 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                     Some(self.buf)
                 } else { None }
             },
-        }
+        };
+        self.remove_fields(res)
     }
 }
 
@@ -548,7 +586,11 @@ impl<'c> Printer<'c> {
         }
     }
 
-    fn print<'a,'b>(self: &'a mut Self, chunk: &'b str, name: &String, idx: Option<usize>) {
+    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, idx: Option<usize>) {
+        let out = match chunk {
+            LineOut::Ref(r) => r,
+            LineOut::Str(ref s) => s.as_str(),
+        };
         match (self.header_names,idx) {
             (true,Some(i)) if i != self.prev_idx => {
                 println!("\n  {}", name); 
@@ -557,22 +599,22 @@ impl<'c> Printer<'c> {
             (_,_) => {},
         }
         match (self.inline_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(chunk.as_bytes(), idx)),
+            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
             (false,Some(ref mut colorizer)) => {
-                if chunk.ends_with('\n') {
-                    print!("{}",colorizer.string(chunk.as_bytes(), idx));
+                if out.ends_with('\n') {
+                    print!("{}",colorizer.string(out.as_bytes(), idx));
                     io::stdout().flush().unwrap();
                 } else {
-                    println!("{}",colorizer.string(chunk.as_bytes(), idx));
+                    println!("{}",colorizer.string(out.as_bytes(), idx));
                 }
             },
-            (true,None) => println!("{}:{}", name, chunk),
+            (true,None) => println!("{}:{}", name, out),
             (false,None) => {
-                if chunk.ends_with('\n') {
-                    print!("{}", chunk);
+                if out.ends_with('\n') {
+                    print!("{}", out);
                     io::stdout().flush().unwrap();
                 } else {
-                    println!("{}", chunk);
+                    println!("{}", out);
                 }
             },
         }
@@ -584,6 +626,7 @@ struct BufParser {
     re: Option<Regex>,
     print_names: bool,
     ctx: (usize,usize),
+    remfields: Vec<Regex>,
 }
 
 impl BufParser {
@@ -610,10 +653,15 @@ impl BufParser {
                 },
             }
         } else { None };
+        let fields: Vec<Regex> = if let Some(csv) = &opts.fields {
+            csv.split(',').map(|name| Regex::new(format!("{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
+                               .expect("Could not parse field name into regex")).collect()
+        } else { Vec::new() };
         BufParser {
             re: grep,
             print_names: opts.argv.len() > 1,
             ctx: (opts.bctx,opts.actx),
+            remfields: fields,
         }
     }
 }
@@ -626,6 +674,7 @@ struct Opts {
     word: bool,
     limit: usize,
     theme: Option<String>,
+    fields: Option<String>,
     actx: usize,
     bctx: usize,
     server: bool,
@@ -640,6 +689,7 @@ impl Opts {
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
         opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
         opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
+        opts.optopt("r", "remove", "remove fields of the format field=value or field=\"value with spaces\"", "F1,F2,F3...");
         opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
         opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
         opts.optopt("m", "theme", "colorscheme", "THEME");
@@ -676,6 +726,7 @@ impl Opts {
             word: matches.opt_present("w"),
             limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
             theme: color,
+            fields: matches.opt_str("r"),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
