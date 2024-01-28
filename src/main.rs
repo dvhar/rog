@@ -48,7 +48,7 @@ impl<'b> Colorizer<'b> {
         Colorizer {
             conf: Config {
                 colored_output: true,
-                theme: theme,
+                theme,
                 ..Default::default() },
             assets: HighlightingAssets::from_binary(),
             themes: THEMES.map(|s|s.to_string()),
@@ -81,7 +81,6 @@ impl<'b> Colorizer<'b> {
         if let Err(e) = controller.run(vec![input.into()], None) {
             eprintln!("Error highlighting synatx:{}", e);
         }
-        print!("\n");
     }
 }
 
@@ -128,11 +127,12 @@ impl<'c> Printer<'c> {
             (_,_) => {},
         }
         match (self.inline_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
+            (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}:{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
             (false,Some(ref mut colorizer)) => colorizer.print(out.as_bytes(), idx),
-            (true,None) => println!("{}:{}", name, out),
-            (false,None) => println!("{}", out),
+            (true,None) => io::stdout().write_all(format!("{}:{}", name, out).as_bytes()).unwrap(),
+            (false,None) => io::stdout().write_all(out.as_bytes()).unwrap(),
         }
+        io::stdout().write("\n".as_bytes()).unwrap();
     }
 }
 
@@ -373,7 +373,10 @@ fn client(opts: &mut Opts) {
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
-            Ok(n) => finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None)),
+            Ok(n) => {
+                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None));
+                io::stdout().flush().unwrap();
+            },
             Err(e) => {
                 eprintln!("error reading from stream:{}", e);
                 return;
@@ -399,7 +402,7 @@ impl FileInfo {
                 COLORS[idx % COLORS.len()].paint(name).to_string() }
             else { name.to_string() },
             lastsize: 0,
-            idx: idx,
+            idx,
         };
         fi.lastsize = fi.file.metadata().unwrap().len();
         fi
@@ -469,6 +472,7 @@ fn tail(opts: &mut Opts) {
                     continue;
                 }
                 finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
+                io::stdout().flush().unwrap();
             }
         }
     }
@@ -495,8 +499,8 @@ struct LineSearcher<'a,'b> {
 impl<'a,'b> LineSearcher<'a,'b> {
     fn new(strategy: LineSource<'a,'b>, buf: &'b str, p: &'a BufParser) -> Self {
         LineSearcher {
-            strategy: strategy,
-            buf: buf,
+            strategy,
+            buf,
             posend: 0,
             posstart: 0,
             parent: p,
@@ -664,16 +668,16 @@ impl BufParser {
                 },
             }
         } else { None };
-        let fields: Vec<Regex> = if let Some(csv) = &opts.fields {
+        let rem_fields: Vec<Regex> = if let Some(csv) = &opts.fields {
             csv.split(',').map(|name| Regex::new(format!("\\b{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
                                .expect("Could not parse field name into regex")).collect()
         } else { Vec::new() };
         let need_lines = opts.fields != None || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
         BufParser {
             grep,
-            need_lines: need_lines,
+            need_lines,
             ctx: (opts.bctx,opts.actx),
-            rem_fields: fields,
+            rem_fields,
         }
     }
 }
@@ -727,7 +731,7 @@ impl Opts {
             println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
             process::exit(0);
         }
-        let color = match (matches.opt_present("c"), matches.opt_present("m")) {
+        let theme = match (matches.opt_present("c"), matches.opt_present("m")) {
             (true,true) => panic!("Cannot use 'c' with 'm'"),
             (true,false) => None,
             (false,true) => matches.opt_str("m"),
@@ -747,9 +751,9 @@ impl Opts {
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
             word: matches.opt_present("w"),
             limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
-            width: width,
             termfit: matches.opt_present("u"),
-            theme: color,
+            width,
+            theme,
             fields: matches.opt_str("r"),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
