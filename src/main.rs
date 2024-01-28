@@ -309,6 +309,14 @@ fn read_and_serve(opts: &Opts) {
                 eprintln!("Move fifo error:{}",e);
                 process::exit(1);
             }
+            let watchpath = path.clone();
+            thread::spawn(move || {
+                while let Ok(_) = fs::metadata(&watchpath) {
+                    thread::sleep(std::time::Duration::from_secs(3));
+                }
+                eprintln!("Fifo deleted, exiting");
+                process::exit(0);
+            });
             let delpath = path.clone();
             ctrlc::set_handler(move || {
                 if let Err(e) = fs::remove_file(delpath.as_str()) {
@@ -428,10 +436,10 @@ fn tail(opts: &mut Opts) {
         opts.tailfiles[0].chars().enumerate().take_while(|c| {
             opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
     let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
     if opts.oldstyle {
         formatted_names = formatted_names.iter().map(|s|format!("================> {} <==============", s)).collect();
     } else {
+        let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
         if opts.termfit && opts.width > maxlen+1 {
             opts.width -= maxlen+1
         };
@@ -583,26 +591,25 @@ impl<'a,'b> LineSearcher<'a,'b> {
         self.group.pop_front()
     }
 
-    fn remove_fields(&self, line: Option<&'b str>) -> Option<LineOut<'b>> {
-        let txt = line?;
+    fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
         let mut fields = self.parent.rem_fields.iter()
-            .map(|re| re.find(txt))
+            .map(|re| re.find(line))
             .filter(|m| m != &None)
             .map(|m| { let m = m.unwrap(); (m.start(), m.end())})
             .collect::<Vec<_>>();
         if fields.len() == 0 {
-            return Some(LineOut::Ref(line?))
+            return Some(LineOut::Ref(line))
         }
         fields.sort_by(|a,b| a.0.cmp(&b.0));
         let mut result = String::new();
         let mut start: usize = 0;
         fields.iter().for_each(|pos| {
             if start <= pos.0 {
-                result += &txt[start..pos.0];
+                result += &line[start..pos.0];
                 start = pos.1;
             }
         });
-        result += &txt[start..];
+        result += &line[start..];
         Some(LineOut::Str(result))
     }
 }
@@ -630,10 +637,10 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                 } else { None }
             },
         };
-        if self.parent.rem_fields.len() == 0 || res == None {
+        if self.parent.rem_fields.len() == 0 {
             return Some(LineOut::Ref(res?))
         }
-        self.remove_fields(res)
+        self.remove_fields(res?)
     }
 }
 
