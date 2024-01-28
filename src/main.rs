@@ -514,20 +514,14 @@ impl<'a,'b> LineSearcher<'a,'b> {
     }
 
     fn remove_fields(&self, chunk: Option<&'b str>) -> Option<LineOut<'b>> {
-        if chunk == None {
-            return None
-        }
-        if self.parent.remfields.len() == 0 {
-            return Some(LineOut::Ref(chunk.unwrap()))
-        }
-        let txt = chunk.unwrap();
+        let txt = chunk?;
         let mut fields = self.parent.remfields.iter()
             .map(|re| re.find(txt))
             .filter(|m| m != &None)
             .map(|m| { let m = m.unwrap(); (m.start(), m.end())})
             .collect::<Vec<_>>();
         if fields.len() == 0 {
-            return Some(LineOut::Ref(chunk.unwrap()))
+            return Some(LineOut::Ref(chunk?))
         }
         fields.sort_by(|a,b| a.0.cmp(&b.0));
         let mut result = String::new();
@@ -557,10 +551,17 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
             LineSource::NoParse => {
                 if self.posend == 0 {
                     self.posend = 1;
-                    Some(self.buf)
+                    if self.buf.ends_with('\n') && self.buf.len() > 1 {
+                        Some(&self.buf[..self.buf.len()-1])
+                    } else {
+                        Some(self.buf)
+                    }
                 } else { None }
             },
         };
+        if self.parent.remfields.len() == 0 || res == None {
+            return Some(LineOut::Ref(res?))
+        }
         self.remove_fields(res)
     }
 }
@@ -591,6 +592,10 @@ impl<'c> Printer<'c> {
             LineOut::Ref(r) => r,
             LineOut::Str(ref s) => s.as_str(),
         };
+        //test a little more before removing
+        //if out.ends_with('\n') {
+            //out = &out[..out.len()-1];
+        //}
         match (self.header_names,idx) {
             (true,Some(i)) if i != self.prev_idx => {
                 println!("\n  {}", name); 
@@ -600,23 +605,9 @@ impl<'c> Printer<'c> {
         }
         match (self.inline_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
-            (false,Some(ref mut colorizer)) => {
-                if out.ends_with('\n') {
-                    print!("{}",colorizer.string(out.as_bytes(), idx));
-                    io::stdout().flush().unwrap();
-                } else {
-                    println!("{}",colorizer.string(out.as_bytes(), idx));
-                }
-            },
+            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(out.as_bytes(), idx)),
             (true,None) => println!("{}:{}", name, out),
-            (false,None) => {
-                if out.ends_with('\n') {
-                    print!("{}", out);
-                    io::stdout().flush().unwrap();
-                } else {
-                    println!("{}", out);
-                }
-            },
+            (false,None) => println!("{}", out),
         }
     }
 }
@@ -654,7 +645,7 @@ impl BufParser {
             }
         } else { None };
         let fields: Vec<Regex> = if let Some(csv) = &opts.fields {
-            csv.split(',').map(|name| Regex::new(format!("{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
+            csv.split(',').map(|name| Regex::new(format!("\\b{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
                                .expect("Could not parse field name into regex")).collect()
         } else { Vec::new() };
         BufParser {
