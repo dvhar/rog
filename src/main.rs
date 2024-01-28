@@ -55,7 +55,7 @@ impl<'b> Colorizer<'b> {
             idx: 0,
         }
     }
-    fn string(&mut self, buf: &[u8], theme: Option<usize>) -> String {
+    fn prep(&mut self, theme: Option<usize>) {
         if let Some(idx) = theme {
             if idx != self.idx {
                 mem::swap(&mut self.conf.theme, &mut self.themes[self.idx]);
@@ -63,6 +63,9 @@ impl<'b> Colorizer<'b> {
                 self.idx = idx;
             }
         }
+    }
+    fn string(&mut self, buf: &[u8], theme: Option<usize>) -> String {
+        self.prep(theme);
         let controller = Controller::new(&self.conf, &self.assets);
         let mut out = String::new();
         let input = Input::from_bytes(buf).name("a.log");
@@ -70,6 +73,15 @@ impl<'b> Colorizer<'b> {
             eprintln!("Error highlighting synatx:{}", e);
         }
         out
+    }
+    fn print(&mut self, buf: &[u8], theme: Option<usize>) {
+        self.prep(theme);
+        let controller = Controller::new(&self.conf, &self.assets);
+        let input = Input::from_bytes(buf).name("a.log");
+        if let Err(e) = controller.run(vec![input.into()], None) {
+            eprintln!("Error highlighting synatx:{}", e);
+        }
+        print!("\n");
     }
 }
 
@@ -117,7 +129,7 @@ impl<'c> Printer<'c> {
         }
         match (self.inline_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
-            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(out.as_bytes(), idx)),
+            (false,Some(ref mut colorizer)) => colorizer.print(out.as_bytes(), idx),
             (true,None) => println!("{}:{}", name, out),
             (false,None) => println!("{}", out),
         }
