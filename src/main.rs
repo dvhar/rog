@@ -72,6 +72,52 @@ impl<'b> Colorizer<'b> {
     }
 }
 
+struct Printer<'c> {
+    color: Option<Colorizer<'c>>,
+    inline_names: bool,
+    header_names: bool,
+    prev_idx: usize,
+}
+impl<'c> Printer<'c> {
+
+    fn new(opts: &mut Opts) -> Self {
+        let multi = opts.tailfiles.len() > 1;
+        Printer {
+            color: match &mut opts.theme {
+                Some(theme) => Some(Colorizer::new(mem::take(theme))),
+                None => None,
+            },
+            inline_names: !opts.oldstyle && multi,
+            header_names: opts.oldstyle && multi,
+            prev_idx: 1000,
+        }
+    }
+
+    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, idx: Option<usize>) {
+        let out = match chunk {
+            LineOut::Ref(r) => r,
+            LineOut::Str(ref s) => s.as_str(),
+        };
+        //test a little more before removing
+        //if out.ends_with('\n') {
+            //out = &out[..out.len()-1];
+        //}
+        match (self.header_names,idx) {
+            (true,Some(i)) if i != self.prev_idx => {
+                println!("\n  {}", name); 
+                self.prev_idx = i;
+            },
+            (_,_) => {},
+        }
+        match (self.inline_names, &mut self.color) {
+            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
+            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(out.as_bytes(), idx)),
+            (true,None) => println!("{}:{}", name, out),
+            (false,None) => println!("{}", out),
+        }
+    }
+}
+
 struct RingBuf {
     buf: [u8; BUFSZ],
     start: usize,
@@ -150,7 +196,7 @@ impl Client {
     }
 }
 
-fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>>>, rx: Receiver<i32>) {
+fn write_to_clients(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>>>, rx: Receiver<i32>) {
     let mut removed = Vec::<i64>::new();
     let mut buf = [0u8; BUFSZ];
     loop {
@@ -189,7 +235,7 @@ fn write_outputs(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>
     }
 }
 
-fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
+fn server(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
         Err(_) => {
@@ -199,7 +245,7 @@ fn sock_serve(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
     };
     let clients = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
     let cls = clients.clone();
-    thread::spawn(move || write_outputs(rb, clients, rx));
+    thread::spawn(move || write_to_clients(rb, clients, rx));
     let mut buf = [0u8; 8];
     let mut client_id: i64 = 0;
     for stream in listener.incoming() {
@@ -236,7 +282,7 @@ fn read_and_serve(opts: &Opts) {
     let rb_serv = rb.clone();
     let (tx, rx) = channel::<i32>();
     let tx_serv = tx.clone();
-    thread::spawn(move || sock_serve(rb_serv, rx, tx_serv));
+    thread::spawn(move || server(rb_serv, rx, tx_serv));
 
     if let Some(path) = &opts.srvpath {
         if opts.fifo {
@@ -254,7 +300,7 @@ fn read_and_serve(opts: &Opts) {
             }).expect("Error setting Ctrl-C handler");
             loop {
                 let file = File::open(path.as_str()).expect("could not open fifo for reading");
-                read_input(file, &tx, rb.clone());
+                read_to_ringbuf(file, &tx, rb.clone());
             }
         } else {
             loop {
@@ -262,15 +308,15 @@ fn read_and_serve(opts: &Opts) {
                 if let Err(e) = file.seek(SeekFrom::End(0)) {
                     eprintln!("Error seeking file:{}", e);
                 }
-                read_input(file, &tx, rb.clone());
+                read_to_ringbuf(file, &tx, rb.clone());
             }
         }
     } else {
-        read_input(io::stdin(), &tx, rb);
+        read_to_ringbuf(io::stdin(), &tx, rb);
     }
 }
 
-fn read_input<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
+fn read_to_ringbuf<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
     let mut buf = [0u8; BUFSZ];
     loop {
         match reader.read(&mut buf) {
@@ -351,16 +397,16 @@ impl FileInfo {
 }
 
 fn tail(opts: &mut Opts) {
-    let not_files: Vec<&String> = opts.argv.iter().filter(|path| match fs::metadata(path) {
+    let not_files: Vec<&String> = opts.tailfiles.iter().filter(|path| match fs::metadata(path) {
                                            Err(_) => true, _ => false, }).collect();
     if !not_files.is_empty() {
         eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
         process::exit(0);
     }
     let prefixlen = if opts.oldstyle { 0 } else {
-        opts.argv[0].chars().enumerate().take_while(|c| {
-            opts.argv.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
-    let mut formatted_names: Vec<String> = opts.argv.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+        opts.tailfiles[0].chars().enumerate().take_while(|c| {
+            opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
+    let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
     let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
     if opts.oldstyle {
         formatted_names = formatted_names.iter().map(|s|format!("================> {} <==============", s)).collect();
@@ -369,7 +415,7 @@ fn tail(opts: &mut Opts) {
     }
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
     let mut ino = Inotify::init().expect("Error while initializing inotify instance");
-    for (i,path) in opts.argv.iter().enumerate() {
+    for (i,path) in opts.tailfiles.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
             Ok(wd) => {
                 let mut file = match File::open(path) {
@@ -407,7 +453,6 @@ fn tail(opts: &mut Opts) {
     }
 }
 
-
 enum LineOut<'b> {
     Ref(&'b str),
     Str(String),
@@ -438,7 +483,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
         }
     }
 
-    fn grep(&mut self) -> Option<&'b str> {
+    fn grep_line(&mut self) -> Option<&'b str> {
         if let LineSource::Regex(r) = self.strategy {
             match r.find_at(self.buf, self.posend) {
                 Some(m) => {
@@ -460,7 +505,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
     }
 
     fn grep_ctx_blob(&mut self) -> Option<&'b str> {
-        self.grep()?;
+        self.grep_line()?;
         let buf = self.buf.as_bytes();
         let mut c0 = self.parent.ctx.0;
         let mut begin = self.posstart;
@@ -484,7 +529,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
 
     fn grep_ctx_lines(&mut self) -> Option<&'b str> {
         if self.group.is_empty() {
-            let found = self.grep()?;
+            let found = self.grep_line()?;
             self.group.push_front(found);
             let buf = self.buf.as_bytes();
             let mut c0 = self.parent.ctx.0;
@@ -513,15 +558,15 @@ impl<'a,'b> LineSearcher<'a,'b> {
         self.group.pop_front()
     }
 
-    fn remove_fields(&self, chunk: Option<&'b str>) -> Option<LineOut<'b>> {
-        let txt = chunk?;
-        let mut fields = self.parent.remfields.iter()
+    fn remove_fields(&self, line: Option<&'b str>) -> Option<LineOut<'b>> {
+        let txt = line?;
+        let mut fields = self.parent.rem_fields.iter()
             .map(|re| re.find(txt))
             .filter(|m| m != &None)
             .map(|m| { let m = m.unwrap(); (m.start(), m.end())})
             .collect::<Vec<_>>();
         if fields.len() == 0 {
-            return Some(LineOut::Ref(chunk?))
+            return Some(LineOut::Ref(line?))
         }
         fields.sort_by(|a,b| a.0.cmp(&b.0));
         let mut result = String::new();
@@ -536,13 +581,14 @@ impl<'a,'b> LineSearcher<'a,'b> {
         Some(LineOut::Str(result))
     }
 }
+
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
     type Item = LineOut<'b>;
     fn next(&mut self) -> Option<Self::Item> {
         let res = match &mut self.strategy {
             LineSource::Regex(_) => {
-                match (self.parent.ctx, self.parent.print_names) {
-                    ((0,0),_) => self.grep(),
+                match (self.parent.ctx, self.parent.need_lines) {
+                    ((0,0),_) => self.grep_line(),
                     ((_,_),true) => self.grep_ctx_lines(),
                     ((_,_),false) => self.grep_ctx_blob(),
                 }
@@ -559,72 +605,25 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                 } else { None }
             },
         };
-        if self.parent.remfields.len() == 0 || res == None {
+        if self.parent.rem_fields.len() == 0 || res == None {
             return Some(LineOut::Ref(res?))
         }
         self.remove_fields(res)
     }
 }
 
-struct Printer<'c> {
-    color: Option<Colorizer<'c>>,
-    inline_names: bool,
-    header_names: bool,
-    prev_idx: usize,
-}
-impl<'c> Printer<'c> {
-
-    fn new(opts: &mut Opts) -> Self {
-        let multi = opts.argv.len() > 1;
-        Printer {
-            color: match &mut opts.theme {
-                Some(theme) => Some(Colorizer::new(mem::take(theme))),
-                None => None,
-            },
-            inline_names: !opts.oldstyle && multi,
-            header_names: opts.oldstyle && multi,
-            prev_idx: 1000,
-        }
-    }
-
-    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, idx: Option<usize>) {
-        let out = match chunk {
-            LineOut::Ref(r) => r,
-            LineOut::Str(ref s) => s.as_str(),
-        };
-        //test a little more before removing
-        //if out.ends_with('\n') {
-            //out = &out[..out.len()-1];
-        //}
-        match (self.header_names,idx) {
-            (true,Some(i)) if i != self.prev_idx => {
-                println!("\n  {}", name); 
-                self.prev_idx = i;
-            },
-            (_,_) => {},
-        }
-        match (self.inline_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => println!("{}:{}", name, colorizer.string(out.as_bytes(), idx)),
-            (false,Some(ref mut colorizer)) => println!("{}",colorizer.string(out.as_bytes(), idx)),
-            (true,None) => println!("{}:{}", name, out),
-            (false,None) => println!("{}", out),
-        }
-    }
-}
-
-
 struct BufParser {
-    re: Option<Regex>,
-    print_names: bool,
+    grep: Option<Regex>,
+    need_lines: bool,
     ctx: (usize,usize),
-    remfields: Vec<Regex>,
+    rem_fields: Vec<Regex>,
 }
 
 impl BufParser {
 
     fn getiter<'a,'b>(self: &'a Self, buf: &'b [u8]) -> LineSearcher<'a,'b> {
         let buf = unsafe { std::str::from_utf8_unchecked(buf) };
-        match (&self.re, self.print_names) {
+        match (&self.grep, self.need_lines) {
             (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf, &self),
             (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf, &self),
             (None, false) => LineSearcher::new(LineSource::NoParse, buf, &self),
@@ -649,10 +648,10 @@ impl BufParser {
                                .expect("Could not parse field name into regex")).collect()
         } else { Vec::new() };
         BufParser {
-            re: grep,
-            print_names: opts.argv.len() > 1,
+            grep,
+            need_lines: opts.tailfiles.len() > 1 || opts.fields != None,
             ctx: (opts.bctx,opts.actx),
-            remfields: fields,
+            rem_fields: fields,
         }
     }
 }
@@ -670,7 +669,7 @@ struct Opts {
     bctx: usize,
     server: bool,
     oldstyle: bool,
-    argv: Vec<String>,
+    tailfiles: Vec<String>,
 }
 impl Opts {
     fn new() -> Self {
@@ -722,7 +721,7 @@ impl Opts {
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
             oldstyle: matches.opt_present("b"),
-            argv: mem::take(&mut matches.free),
+            tailfiles: mem::take(&mut matches.free),
         }
     }
 }
@@ -731,7 +730,7 @@ fn main() {
     let mut opts = Opts::new();
     if opts.server {
         read_and_serve(&opts);
-    } else if opts.argv.is_empty() {
+    } else if opts.tailfiles.is_empty() {
         client(&mut opts);
     } else {
         tail(&mut opts);
