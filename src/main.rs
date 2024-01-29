@@ -56,7 +56,8 @@ impl<'b> Colorizer<'b> {
         }
     }
     fn prep(&mut self, theme: Option<usize>) {
-        if let Some(idx) = theme {
+        if let Some(mut idx) = theme {
+            idx %= THEMES.len();
             if idx != self.idx {
                 mem::swap(&mut self.conf.theme, &mut self.themes[self.idx]);
                 mem::swap(&mut self.conf.theme, &mut self.themes[idx]);
@@ -127,9 +128,9 @@ impl<'c> Printer<'c> {
             (_,_) => {},
         }
         match (self.inline_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}:{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
+            (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
             (false,Some(ref mut colorizer)) => colorizer.print(out.as_bytes(), idx),
-            (true,None) => io::stdout().write_all(format!("{}:{}", name, out).as_bytes()).unwrap(),
+            (true,None) => io::stdout().write_all(format!("{}{}", name, out).as_bytes()).unwrap(),
             (false,None) => io::stdout().write_all(out.as_bytes()).unwrap(),
         }
         io::stdout().write("\n".as_bytes()).unwrap();
@@ -401,14 +402,18 @@ struct FileInfo {
     idx: usize,
 }
 impl FileInfo {
-    fn new(name: &String, origpath: &String, f: File, idx: usize) -> Self {
+    fn new(name: &String, origpath: &String, f: File, idx: usize, opts: &Opts) -> Self {
         static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
         let mut fi = FileInfo {
             file: f,
             rawname: origpath.clone(),
             name: if io::stdout().is_terminal() {
-                COLORS[idx % COLORS.len()].paint(name).to_string() }
-            else { name.to_string() },
+                if opts.oldstyle && opts.theme != None {
+                    Red.bold().paint(name).to_string()
+                } else {
+                    COLORS[idx % COLORS.len()].bold().paint(name).to_string()
+                }
+            } else { name.to_string() },
             lastsize: 0,
             idx,
         };
@@ -443,10 +448,10 @@ fn tail(opts: &mut Opts) {
         if opts.termfit && opts.width > maxlen+1 {
             opts.width -= maxlen+1
         };
-        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}", s, width=maxlen)).collect();
+        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
     }
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
-    let mut ino = Inotify::init().expect("Error while initializing inotify instance");
+    let mut ino = Inotify::init().expect("Error initializing inotify instance");
     for (i,path) in opts.tailfiles.iter().enumerate() {
         match ino.watches().add(path, WatchMask::MODIFY) {
             Ok(wd) => {
@@ -458,7 +463,7 @@ fn tail(opts: &mut Opts) {
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i));
+                let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i, &opts));
             },
             Err(e) => {
                 eprintln!("Error adding watch:{}", e);
@@ -471,7 +476,7 @@ fn tail(opts: &mut Opts) {
     let mut printer = Printer::new(opts);
     let finder = BufParser::new(opts);
     loop {
-        let events = ino.read_events_blocking(&mut evbuf).expect("Error while reading events");
+        let events = ino.read_events_blocking(&mut evbuf).expect("Error reading events");
         for e in events {
             if let Some(fi) = files.get_mut(&e.wd) {
                 fi.updatesize();
