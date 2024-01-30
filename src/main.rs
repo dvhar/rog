@@ -20,27 +20,26 @@ bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input}
 
 
 const BUFSZ: usize = 1024*1024;
-const THEMES: [&'static str; 15] = [
+const THEMES: [&'static str; 13] = [
  "Visual Studio Dark+",
- "Nord",
  "1337",
- "Monokai Extended",
- "Coldark-Dark",
  "DarkNeon",
  "Dracula",
- "OneHalfDark",
- "Solarized (dark)",
+ "Coldark-Dark",
+ "Monokai Extended",
  "Sublime Snazzy",
  "TwoDark",
- "ansi",
  "base16",
  "gruvbox-dark",
- "zenburn"];
+ "Nord",
+ "zenburn",
+ "ansi",
+ ];
 
 struct Colorizer<'a> {
     conf: bat::config::Config<'a>,
     assets: bat::assets::HighlightingAssets,
-    themes: [String; 15],
+    themes: [String; 13],
     idx: usize,
 }
 impl<'b> Colorizer<'b> {
@@ -89,6 +88,7 @@ struct Printer<'c> {
     color: Option<Colorizer<'c>>,
     inline_names: bool,
     header_names: bool,
+    one_color: bool,
     prev_idx: usize,
     width: usize,
 }
@@ -105,10 +105,11 @@ impl<'c> Printer<'c> {
             header_names: opts.oldstyle && multi,
             prev_idx: 1000,
             width: opts.width,
+            one_color: opts.onetheme,
         }
     }
 
-    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, idx: Option<usize>) {
+    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, mut idx: Option<usize>) {
         let mut out = match chunk {
             LineOut::Ref(r) => r,
             LineOut::Str(ref s) => s.as_str(),
@@ -126,6 +127,9 @@ impl<'c> Printer<'c> {
                 self.prev_idx = i;
             },
             (_,_) => {},
+        }
+        if self.one_color {
+            idx = None;
         }
         match (self.inline_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
@@ -403,15 +407,15 @@ struct FileInfo {
 }
 impl FileInfo {
     fn new(name: &String, origpath: &String, f: File, idx: usize, opts: &Opts) -> Self {
-        static COLORS: [Colour;6] = [Red, Green, Yellow, Blue, Purple, Cyan];
+        static COLORS: [Colour;8] = [Cyan, Red, Purple, Yellow, Green, Red, Purple, Green];
         let mut fi = FileInfo {
             file: f,
             rawname: origpath.clone(),
             name: if io::stdout().is_terminal() {
                 if opts.oldstyle && opts.theme != None {
-                    Red.bold().paint(name).to_string()
+                    Red.bold().on(Colour::RGB(20,15,10)).paint(name).to_string()
                 } else {
-                    COLORS[idx % COLORS.len()].bold().paint(name).to_string()
+                    COLORS[idx % COLORS.len()].bold().on(Colour::RGB(20,15,10)).paint(name).to_string()
                 }
             } else { name.to_string() },
             lastsize: 0,
@@ -704,6 +708,7 @@ struct Opts {
     width: usize,
     termfit: bool,
     theme: Option<String>,
+    onetheme: bool,
     fields: Option<String>,
     actx: usize,
     bctx: usize,
@@ -729,6 +734,7 @@ impl Opts {
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
+        opts.optflag("n", "onecolor", "Uniform highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("b", "break", "put file name in a line break between chunks rather than on the side");
         opts.optflag("h", "help", "print this help menu");
@@ -772,6 +778,7 @@ impl Opts {
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
             oldstyle: matches.opt_present("b"),
             tailfiles: mem::take(&mut matches.free),
+            onetheme: matches.opt_present("n"),
         }
     }
 }
