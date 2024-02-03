@@ -1,0 +1,115 @@
+.TH ROG 1 "January 2022" "Version 1.0" "User Commands"
+.SH NAME
+rog \- a versatile logging and monitoring tool
+.SH SYNOPSIS
+.B rog
+[ options ] [ files ]
+.SH DESCRIPTION
+This tool allows users to monitor logs in real-time, with options for filtering and coloring the output for easy readability. It can read from files, a named pipe, or stdin. When reading from a pipe, it runs in server mode, logging data to an internal ringbuffer and serving it to rog clients which print it to console just like tailing a file.
+
+The following options are available:
+
+.SH Server Mode Flags
+.TP 8
+\fB-f PATH\fP, \fI--fifo\fP PATH
+Creates and reads from a named pipe at the specified path. This option implies
+\fB-s\fP (server mode).
+.TP
+\fB-t PATH\fP, \fI--file\fP PATH
+Similar to -f, but reads from a file. Not sure why you would use this flag but ok.
+.TP
+\fB-s\fP, \fI--server\fP
+Operates in server mode, which defaults to reading from standard input.
+
+.SH Client or Tail Mode Flags
+.TP 8
+\fB-i IP\fP, \fI--ip\fP IP
+Specifies the IP address of the server when operating in client mode. By default, it uses localhost
+(127.0.0.1).
+.TP
+\fB-l NUM\fP, \fI--bytes\fP NUM
+Specifies the number of bytes to read from the server before exiting. By default, it reads
+indefinitely.
+.TP
+\fB-o NUM\fP, \fI--width\fP NUM
+Limits the number of bytes per row in the output. By default, there is no limit.
+.TP
+\fB-r F1,F2,F3...\fP, \fI--remove\fP F1,F2,F3...
+Removes fields from the output. Matches log fields with format field=value or field="quoted value". Multiple fields can be specified separated by commas.
+.TP
+\fB-g REGEX\fP, \fI--grep\fP REGEX
+Only shows lines that match the specified regular expression pattern.
+.TP
+\fB-w REGEX\fP, \fI--wgrep\fP REGEX
+Like -\fB-g\fP, but only matches whole words.
+.TP
+\fB-v REGEX\fP, \fI--vgrep\fP REGEX
+Only shows lines that do not match the specified regular expression pattern.
+.TP
+\fB-m THEME\fP, \fI--theme\fP THEME
+Changes the color scheme of the output. Available themes are: Visual Studio Dark+, 1337, DarkNeon, Dracula,
+Coldark-Dark, Monokai Extended, Sublime Snazzy, TwoDark, base16, gruvbox-dark, Nord, zenburn, ansi.
+.TP
+\fB-C NUM\fP, \fI--context\fP NUM
+Shows NUM lines of context around grep results. Note that these flags only include context from the same 'read' operation.
+.TP
+\fB-A NUM\fP, \fI--after\fP NUM
+Shows NUM lines of context after grep results.
+.TP
+\fB-B NUM\fP, \fI--before\fP NUM
+Shows NUM lines of context before grep results.
+.TP
+\fB-b\fP, \fI--break\fP
+Puts file names in a line break between chunks rather than on the side.
+.TP
+\fB-u\fP, \fI--truncate\fP
+Truncates bytes that don't fit the terminal.
+.TP
+\fB-c\fP, \fI--nocolor\fP
+Disables syntax highlighting.
+.TP
+\fB-n\fP, \fI--onecolor\fP
+Uses uniform highlighting.
+
+.SH EXAMPLES
+Here are some examples of how to use the tool:
+
+Create a named pipe at /tmp/myfifo and read from it in server mode:
+.RS
+.PP
+\fBrog -f /tmp/myfifo\fP
+.RE
+
+Read the stdout of some_program in server mode:
+.RS
+.PP
+\fBsome_program | rog -s\fP
+.RE
+
+Connect to a rog server running on localhost and print whatever it is
+serving:
+.RS
+.PP
+\fBrog\fP
+.RE
+
+Connect to a rog server running on 10.0.0.4 and print whatever it is serving, removing
+the 'time' and 'date' fields if they are present:
+.RS
+.PP
+\fBrog -i 10.0.0.4 -r time,date\fP
+.RE
+
+Monitor some log files and only show lines that start with ERROR, with 3 lines of
+context:
+.RS
+.PP
+\fBrog *.log -g "^ERROR" -C3\fP
+.RE
+
+.SH SEE ALSO
+tail, grep, netcat
+.SH AUTHOR
+Dave <jnk@davosaur.com>
+.SH BUGS
+Please report any bugs to the author.
