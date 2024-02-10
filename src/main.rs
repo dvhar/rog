@@ -446,7 +446,7 @@ fn tail(opts: &mut Opts) {
             opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
     let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
     if opts.oldstyle {
-        formatted_names = formatted_names.iter().map(|s|format!("================> {} <==============", s)).collect();
+        formatted_names = formatted_names.iter().map(|s|format!("=====> {} <=====", s)).collect();
     } else {
         let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
         if opts.termfit && opts.width > maxlen+1 {
@@ -728,6 +728,7 @@ impl Opts {
         opts.optopt("r", "remove", "remove fields of the format field=value or field=\"value with spaces\"", "F1,F2,F3...");
         opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
         opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
+        opts.optopt("x", "exclude", "ignore file params that match a pattern", "REGEX");
         opts.optopt("m", "theme", "colorscheme", "THEME");
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
@@ -762,6 +763,12 @@ impl Opts {
         } else {
             matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
         };
+        let infiles = match matches.opt_str("x") {
+            Some(pat) => {
+                let re = Regex::new(pat.as_str()).unwrap();
+                matches.free.iter().filter(|x|!re.is_match(x)).map(|x|x.to_string()).collect()
+            }, None => mem::take(&mut matches.free),
+        };
         Opts {
             host: matches.opt_str("i").unwrap_or("127.0.0.1".to_string()),
             fifo: matches.opt_present("f"),
@@ -777,7 +784,7 @@ impl Opts {
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
             oldstyle: matches.opt_present("b"),
-            tailfiles: mem::take(&mut matches.free),
+            tailfiles: infiles,
             onetheme: matches.opt_present("n"),
         }
     }

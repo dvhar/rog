@@ -3,7 +3,26 @@
 rog \- a versatile logging and monitoring tool
 .SH SYNOPSIS
 .B rog
-[ options ] [ files ]
+[\fI-i\fR \fIHOST\fR]
+[\fI-f\fR \fIFIFO\_PATH\fR]
+[\fI-t\fR \fIFILE\_PATH\fR]
+[\fI-l\fR \fINUMBER\fR]
+[\fI-o\fR \fINUMBER\fR]
+[\fI-r\fR \fIREMOVE\_FIELDS\fR]
+[\fI-g\fR \fIPATTERN\fR]
+[\fI-w\fR \fIPATTERN\fR]
+[\fI-v\fR \fIPATTERN\fR]
+[\fI-m\fR \fITheme\fR]
+[\fI-C\fR \fINUMBER\fR]
+[\fI-A\fR \fINUMBER\fR]
+[\fI-B\fR \fINUMBER\fR]
+[\fI-u\fR]
+[\fI-c\fR]
+[\fI-n\fR]
+[\fI-s\fR]
+[\fI-b\fR]
+[\fI-h\fR]
+[FILES...]
 .SH DESCRIPTION
 This tool allows users to monitor logs in real-time, with options for filtering and coloring the output for easy readability. It can read from files, a named pipe, or stdin. When reading from a pipe, it runs in server mode, logging data to an internal ringbuffer and serving it to rog clients which print it to console just like tailing a file.
 
@@ -11,65 +30,65 @@ The following options are available:
 
 .SH Server Mode Flags
 .TP 8
-\fB-f PATH\fP, \fI--fifo\fP PATH
+\fB-f FIFO\_PATH\fP
 Creates and reads from a named pipe at the specified path. This option implies
 \fB-s\fP (server mode).
 .TP
-\fB-t PATH\fP, \fI--file\fP PATH
+\fB-t FILE_PATH\fP
 Similar to -f, but reads from a file. Not sure why you would use this flag but ok.
 .TP
-\fB-s\fP, \fI--server\fP
+\fB-s\fP
 Operates in server mode, which defaults to reading from standard input.
 
 .SH Client or Tail Mode Flags
 .TP 8
-\fB-i IP\fP, \fI--ip\fP IP
+\fB-i IP\fP
 Specifies the IP address of the server when operating in client mode. By default, it uses localhost
 (127.0.0.1).
 .TP
-\fB-l NUM\fP, \fI--bytes\fP NUM
+\fB-l NUM\fP
 Specifies the number of bytes to read from the server before exiting. By default, it reads
 indefinitely.
 .TP
-\fB-o NUM\fP, \fI--width\fP NUM
+\fB-o NUM\fP
 Limits the number of bytes per row in the output. By default, there is no limit.
 .TP
-\fB-r F1,F2,F3...\fP, \fI--remove\fP F1,F2,F3...
+\fB-r F1,F2,F3...\fP
 Removes fields from the output. Matches log fields with format field=value or field="quoted value". Multiple fields can be specified separated by commas.
 .TP
-\fB-g REGEX\fP, \fI--grep\fP REGEX
+\fB-g REGEX\fP
 Only shows lines that match the specified regular expression pattern.
 .TP
-\fB-w REGEX\fP, \fI--wgrep\fP REGEX
-Like -\fB-g\fP, but only matches whole words.
+\fB-w REGEX\fP
+Like \fB-g\fP, but only matches whole words.
 .TP
-\fB-v REGEX\fP, \fI--vgrep\fP REGEX
+\fB-v REGEX\fP
 Only shows lines that do not match the specified regular expression pattern.
 .TP
-\fB-m THEME\fP, \fI--theme\fP THEME
+\fB-m THEME\fP
 Changes the color scheme of the output. Available themes are: Visual Studio Dark+, 1337, DarkNeon, Dracula,
 Coldark-Dark, Monokai Extended, Sublime Snazzy, TwoDark, base16, gruvbox-dark, Nord, zenburn, ansi.
 .TP
-\fB-C NUM\fP, \fI--context\fP NUM
+\fB-C NUM\fP
 Shows NUM lines of context around grep results. Note that these flags only include context from the same 'read' operation.
 .TP
-\fB-A NUM\fP, \fI--after\fP NUM
+\fB-A NUM\fP
 Shows NUM lines of context after grep results.
 .TP
-\fB-B NUM\fP, \fI--before\fP NUM
+\fB-B NUM\fP
 Shows NUM lines of context before grep results.
 .TP
-\fB-b\fP, \fI--break\fP
+\fB-b\fP
 Puts file names in a line break between chunks rather than on the side.
 .TP
-\fB-u\fP, \fI--truncate\fP
+\fB-u\fP
 Truncates bytes that don't fit the terminal.
 .TP
-\fB-c\fP, \fI--nocolor\fP
+\fB-c\fP
 Disables syntax highlighting.
 .TP
-\fB-n\fP, \fI--onecolor\fP
-Uses uniform highlighting.
+\fB-n\fP
+Use the same colors for all files.
 
 .SH EXAMPLES
 Here are some examples of how to use the tool:
@@ -108,7 +127,7 @@ context:
 .RE
 
 .SH SEE ALSO
-tail, grep, netcat
+tail(1), grep(1), netcat(1)
 .SH AUTHOR
 Dave <jnk@davosaur.com>
 .SH BUGS
