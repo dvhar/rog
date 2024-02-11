@@ -210,32 +210,46 @@ struct Client {
 }
 
 impl Client {
-    fn new(s: TcpStream) -> Self {
-        Client {
-            stream: s,
+    fn new(stream: TcpStream) -> Self {
+        let mut client = Client {
+            stream,
             limit: 0,
             limited: false,
+        };
+        let mut buf = [0u8; 8];
+        match client.stream.read(&mut buf[..8]) {
+            Ok(n) if n == 8 => {
+                client.limit = usize::from_le_bytes(||->[u8;8]{buf[..8].try_into().unwrap()}());
+                if client.limit > 0 {
+                    client.limited = true;
+                }
+            },
+            Ok(n) => eprintln!("read control message does not have 8 bytes, has:{}", n),
+            Err(e) => {
+                eprintln!("read control message error:{}", e);
+            },
         }
+        client
     }
 }
 
-fn write_to_clients(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>>>, rx: Receiver<i32>) {
+fn write_to_clients(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Client>>>, has_data: Receiver<i32>) {
     let mut removed = Vec::<i64>::new();
     let mut buf = [0u8; BUFSZ];
     loop {
-        if let Err(e) = rx.recv() {
+        if let Err(e) = has_data.recv() {
             eprintln!("recv error:{}", e);
             continue;
         }
-        let mut cls = clients.lock().unwrap();
-        if cls.is_empty() {
+        let mut clientmap = clients.lock().unwrap();
+        if clientmap.is_empty() {
             continue;
         }
         let n = rb.lock().unwrap().read_to(&mut buf);
         if n == 0 {
             continue;
         }
-        for cl in cls.iter_mut() {
+        for cl in clientmap.iter_mut() {
             let write_amount = if cl.1.limited && n >= cl.1.limit {
                 removed.push(*cl.0);
                 cl.1.limit
@@ -250,15 +264,13 @@ fn write_to_clients(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Clie
             }
         }
         if !removed.is_empty() {
-            for i in removed.iter() {
-                cls.remove(i);
-            }
+            removed.iter().for_each(|i|{clientmap.remove(i);});
             removed.clear();
         }
     }
 }
 
-fn server(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
+fn server(rb: Arc<Mutex<RingBuf>>, has_data: Receiver<i32>, first_check: Sender<i32>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
         Err(_) => {
@@ -266,31 +278,16 @@ fn server(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
             process::exit(0);
         },
     };
-    let clients = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
-    let cls = clients.clone();
-    thread::spawn(move || write_to_clients(rb, clients, rx));
-    let mut buf = [0u8; 8];
+    let clients1 = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
+    let clients2 = clients1.clone();
+    thread::spawn(move || write_to_clients(rb, clients1, has_data));
     let mut client_id: i64 = 0;
     for stream in listener.incoming() {
         client_id += 1;
         match stream {
             Ok(stream) => {
-                let mut client = Client::new(stream);
-                match client.stream.read(&mut buf[..8]) {
-                    Ok(n) if n == 8 => {
-                        client.limit = usize::from_le_bytes(||->[u8;8]{buf[..8].try_into().unwrap()}());
-                        if client.limit > 0 {
-                            client.limited = true;
-                        }
-                    },
-                    Ok(n) => eprintln!("read control message does not have 8 bytes, has:{}", n),
-                    Err(e) => {
-                        eprintln!("read control message error:{}", e);
-                        break;
-                    },
-                }
-                let _ = cls.lock().unwrap().insert(client_id, client);
-                if let Err(e) = tx.send(0) {
+                let _ = clients2.lock().unwrap().insert(client_id, Client::new(stream));
+                if let Err(e) = first_check.send(0) {
                     eprintln!("Error sending client first read channel:{}", e);
                 }
             }
@@ -303,9 +300,9 @@ fn server(rb: Arc<Mutex<RingBuf>>, rx: Receiver<i32>, tx: Sender<i32>) {
 fn read_and_serve(opts: &Opts) {
     let rb = Arc::new(Mutex::new(RingBuf::new()));
     let rb_serv = rb.clone();
-    let (tx, rx) = channel::<i32>();
-    let tx_serv = tx.clone();
-    thread::spawn(move || server(rb_serv, rx, tx_serv));
+    let (has_data_tx, has_data_rx) = channel::<i32>();
+    let first_check = has_data_tx.clone();
+    thread::spawn(move || server(rb_serv, has_data_rx, first_check));
 
     if let Some(path) = &opts.srvpath {
         if opts.fifo {
@@ -331,7 +328,7 @@ fn read_and_serve(opts: &Opts) {
             }).expect("Error setting Ctrl-C handler");
             loop {
                 let file = File::open(path.as_str()).expect("could not open fifo for reading");
-                read_to_ringbuf(file, &tx, rb.clone());
+                read_to_ringbuf(file, &has_data_tx, rb.clone());
             }
         } else {
             loop {
@@ -339,21 +336,21 @@ fn read_and_serve(opts: &Opts) {
                 if let Err(e) = file.seek(SeekFrom::End(0)) {
                     eprintln!("Error seeking file:{}", e);
                 }
-                read_to_ringbuf(file, &tx, rb.clone());
+                read_to_ringbuf(file, &has_data_tx, rb.clone());
             }
         }
     } else {
-        read_to_ringbuf(io::stdin(), &tx, rb);
+        read_to_ringbuf(io::stdin(), &has_data_tx, rb);
     }
 }
 
-fn read_to_ringbuf<T: Read>(mut reader: T, tx: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
+fn read_to_ringbuf<T: Read>(mut reader: T, has_data: &Sender<i32>, rb: Arc<Mutex<RingBuf>>) {
     let mut buf = [0u8; BUFSZ];
     loop {
         match reader.read(&mut buf) {
             Ok(n) if n > 0 => {
                 rb.lock().unwrap().read_from(&buf[0..n]);
-                if let Err(e) = tx.send(0) {
+                if let Err(e) = has_data.send(0) {
                     eprintln!("send error:{}", e);
                     continue;
                 }
