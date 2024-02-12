@@ -379,11 +379,17 @@ fn client(opts: &mut Opts) {
     }
     let dummy_name: String = Default::default();
     let mut printer = Printer::new(opts);
+    let grepping = opts.grep != None;
     let finder = BufParser::new(opts);
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
-            Ok(n) => {
+            Ok(mut n) => {
+                if grepping && n < buf.len()-1 {
+                    while buf[n-1] != b'\n' {
+                        n += stream.read(&mut buf[n..]).unwrap();
+                    }
+                }
                 finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None));
                 io::stdout().flush().unwrap();
             },
@@ -472,6 +478,7 @@ fn tail(opts: &mut Opts) {
             }
         }
     }
+    let grepping = opts.grep != None;
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
     let mut printer = Printer::new(opts);
@@ -481,9 +488,14 @@ fn tail(opts: &mut Opts) {
         for e in events {
             if let Some(fi) = files.get_mut(&e.wd) {
                 fi.updatesize();
-                let n = fi.file.read(&mut buf).unwrap();
+                let mut n = fi.file.read(&mut buf).unwrap();
                 if n == 0 {
                     continue;
+                }
+                if grepping && n < buf.len()-1 {
+                    while buf[n-1] != b'\n' {
+                        n += fi.file.read(&mut buf[n..]).unwrap();
+                    }
                 }
                 finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
                 io::stdout().flush().unwrap();
