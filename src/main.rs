@@ -610,15 +610,13 @@ impl<'a,'b> LineSearcher<'a,'b> {
     }
 
     fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
-        let mut fields = self.parent.rem_fields.iter()
-            .map(|re| re.find(line))
-            .filter(|m| m != &None)
-            .map(|m| { let m = m.unwrap(); (m.start(), m.end())})
-            .collect::<Vec<_>>();
+        let fields = match &self.parent.rem_fields {
+            None => return Some(LineOut::Ref(line)),
+            Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect::<Vec<_>>(),
+        };
         if fields.len() == 0 {
             return Some(LineOut::Ref(line))
         }
-        fields.sort_by(|a,b| a.0.cmp(&b.0));
         let mut result = String::new();
         let mut start: usize = 0;
         fields.iter().for_each(|pos| {
@@ -655,9 +653,6 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                 } else { None }
             },
         };
-        if self.parent.rem_fields.len() == 0 {
-            return Some(LineOut::Ref(res?))
-        }
         self.remove_fields(res?)
     }
 }
@@ -666,7 +661,7 @@ struct BufParser {
     grep: Option<Regex>,
     need_lines: bool,
     ctx: (usize,usize),
-    rem_fields: Vec<Regex>,
+    rem_fields: Option<Regex>,
 }
 
 impl BufParser {
@@ -693,10 +688,10 @@ impl BufParser {
                 },
             }
         } else { None };
-        let rem_fields: Vec<Regex> = if let Some(csv) = &opts.fields {
-            csv.split(',').map(|name| Regex::new(format!("\\b{}=(\"[^\"]*\"|[^\\s]*) ?", name).as_str())
-                               .expect("Could not parse field name into regex")).collect()
-        } else { Vec::new() };
+        let rem_fields = if let Some(csv) = &opts.fields {
+            Some(Regex::new(format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, csv.replace(",","|")).as_str())
+                               .expect("Could not parse field name into regex"))
+        } else { None };
         let need_lines = opts.fields != None || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
         BufParser {
             grep,
