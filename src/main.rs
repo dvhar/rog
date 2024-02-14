@@ -1,5 +1,6 @@
 use {
 std::collections::HashMap,
+std::cell::RefCell,
 std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
 std::net::{ TcpListener, TcpStream},
 std::process,
@@ -510,7 +511,7 @@ enum LineOut<'b> {
 }
 enum LineSource<'a,'b> {
     Regex(&'a Regex),
-    Lines(std::str::Lines<'b>),
+    Lines(RefCell<std::str::Lines<'b>>),
     NoParse,
 }
 struct LineSearcher<'a,'b> {
@@ -534,23 +535,36 @@ impl<'a,'b> LineSearcher<'a,'b> {
         }
     }
 
+    fn vgrep_match(&self, line: &str) -> bool {
+        match &self.parent.vgrep {
+            Some(re) => re.is_match(line),
+            None => false,
+        }
+    }
+
     fn grep_line(&mut self) -> Option<&'b str> {
         if let LineSource::Regex(r) = self.strategy {
-            match r.find_at(self.buf, self.posend) {
-                Some(m) => {
-                    let linestart = match self.buf[..m.start()].rfind('\n') {
-                        Some(i) => i+1,
-                        None => 0
-                    };
-                    let lineend = match self.buf[m.end()..].find('\n') {
-                        Some(i) => i+m.end(),
-                        None => self.buf.len()
-                    };
-                    self.posend = lineend;
-                    self.posstart = linestart;
-                    Some(&self.buf[linestart..lineend])
-                },
-                None => None,
+            loop {
+                match r.find_at(self.buf, self.posend) {
+                    Some(m) => {
+                        let linestart = match self.buf[..m.start()].rfind('\n') {
+                            Some(i) => i+1,
+                            None => 0
+                        };
+                        let lineend = match self.buf[m.end()..].find('\n') {
+                            Some(i) => i+m.end(),
+                            None => self.buf.len()
+                        };
+                        self.posend = lineend;
+                        self.posstart = linestart;
+                        let line = &self.buf[linestart..lineend];
+                        if self.vgrep_match(line) {
+                            continue;
+                        }
+                        return Some(line)
+                    },
+                    None => return None,
+                }
             }
         } else {None}
     }
@@ -628,6 +642,24 @@ impl<'a,'b> LineSearcher<'a,'b> {
         result += &line[start..];
         Some(LineOut::Str(result))
     }
+
+    fn getline(&mut self) -> Option<&'b str> {
+        if let LineSource::Lines(l) = &self.strategy {
+            loop {
+                let maybe_line = l.borrow_mut().next();
+                match maybe_line {
+                    None => return None,
+                    Some(line) => {
+                        if self.vgrep_match(line) {
+                            continue;
+                        }
+                        return maybe_line
+                    },
+                }
+            }
+        }
+        None
+    }
 }
 
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
@@ -641,7 +673,7 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                     ((_,_),false) => self.grep_ctx_blob(),
                 }
             },
-            LineSource::Lines(l) => l.next(),
+            LineSource::Lines(_) => self.getline(),
             LineSource::NoParse => {
                 if self.posend == 0 {
                     self.posend = 1;
@@ -659,6 +691,7 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
 
 struct BufParser {
     grep: Option<Regex>,
+    vgrep: Option<Regex>,
     need_lines: bool,
     ctx: (usize,usize),
     rem_fields: Option<Regex>,
@@ -670,7 +703,7 @@ impl BufParser {
         let buf = unsafe { std::str::from_utf8_unchecked(buf) };
         match (&self.grep, self.need_lines) {
             (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf, &self),
-            (None, true) => LineSearcher::new(LineSource::Lines(buf.lines()), buf, &self),
+            (None, true) => LineSearcher::new(LineSource::Lines(RefCell::new(buf.lines())), buf, &self),
             (None, false) => LineSearcher::new(LineSource::NoParse, buf, &self),
         }
     }
@@ -688,6 +721,15 @@ impl BufParser {
                 },
             }
         } else { None };
+        let vgrep = if let Some(ref reg) = opts.vgrep {
+            match Regex::new(reg.as_str()) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    eprintln!("Regex error for {}:{}", reg, e);
+                    process::exit(1);
+                },
+            }
+        } else { None };
         let rem_fields = if let Some(csv) = &opts.fields {
             Some(Regex::new(format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, csv.replace(",","|")).as_str())
                                .expect("Could not parse field name into regex"))
@@ -695,6 +737,7 @@ impl BufParser {
         let need_lines = opts.fields != None || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
         BufParser {
             grep,
+            vgrep,
             need_lines,
             ctx: (opts.bctx,opts.actx),
             rem_fields,
@@ -707,6 +750,7 @@ struct Opts {
     fifo: bool,
     srvpath: Option<String>,
     grep: Option<String>,
+    vgrep: Option<String>,
     word: bool,
     limit: usize,
     width: usize,
@@ -732,6 +776,7 @@ impl Opts {
         opts.optopt("r", "remove", "remove fields of the format field=value or field=\"value with spaces\"", "F1,F2,F3...");
         opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
         opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
+        opts.optopt("v", "vrep", "only show lines that dont' match a pattern", "REGEX");
         opts.optopt("x", "exclude", "ignore file params that match a pattern", "REGEX");
         opts.optopt("m", "theme", "colorscheme", "THEME");
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
@@ -778,6 +823,7 @@ impl Opts {
             fifo: matches.opt_present("f"),
             srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
+            vgrep: matches.opt_str("v"),
             word: matches.opt_present("w"),
             limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
             termfit: matches.opt_present("u"),
