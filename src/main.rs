@@ -660,6 +660,47 @@ impl<'a,'b> LineSearcher<'a,'b> {
         }
         None
     }
+
+    fn getblob(&mut self) -> Option<&'b str> {
+        if self.posstart < self.buf.len() {
+            let blob = if self.buf.ends_with('\n') && self.buf.len() > 1 {
+                &self.buf[..self.buf.len()-1]
+            } else {
+                self.buf
+            };
+            match &self.parent.vgrep {
+                None => {
+                    self.posstart = self.buf.len();
+                    return Some(blob);
+                }
+                Some(re) => {
+                    loop {
+                        let chunk = &blob[self.posstart..];
+                        match re.find(chunk) {
+                            None => {
+                                self.posstart = self.buf.len();
+                                return Some(chunk)
+                            },
+                            Some(m) => {
+                                let cend = chunk.len();
+                                let start = match chunk[..m.start()].rfind('\n') { Some(i) => i, None => 0 };
+                                let end = match chunk[m.end()..].find('\n') { Some(i) => m.end()+i+1, None => cend };
+                                if start == 0 {
+                                    if end == cend {
+                                        return None
+                                    }
+                                    self.posstart += end;
+                                    continue;
+                                }
+                                self.posstart += end;
+                                return Some(&chunk[0..start])
+                            }
+                        }
+                    }
+                },
+            };
+        } else { None }
+    }
 }
 
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
@@ -674,16 +715,7 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                 }
             },
             LineSource::Lines(_) => self.getline(),
-            LineSource::NoParse => {
-                if self.posend == 0 {
-                    self.posend = 1;
-                    if self.buf.ends_with('\n') && self.buf.len() > 1 {
-                        Some(&self.buf[..self.buf.len()-1])
-                    } else {
-                        Some(self.buf)
-                    }
-                } else { None }
-            },
+            LineSource::NoParse => self.getblob(),
         };
         self.remove_fields(res?)
     }
