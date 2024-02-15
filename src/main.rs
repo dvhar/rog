@@ -10,7 +10,7 @@ std::sync::{Arc, Mutex},
 std::thread,
 std::collections::VecDeque,
 std::{fs,fs::File},
-regex::Regex,
+regex::{Regex,RegexBuilder},
 termsize,
 ansi_term::{Colour, Colour::*},
 getopts::Options,
@@ -745,7 +745,7 @@ impl BufParser {
             let search = if opts.word {
                 format!("\\b{}\\b", reg)
                 } else { mem::take(reg) };
-            match Regex::new(search.as_str()) {
+            match RegexBuilder::new(search.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
                 Err(e) => {
                     eprintln!("Regex error for {}:{}", search, e);
@@ -754,7 +754,7 @@ impl BufParser {
             }
         } else { None };
         let vgrep = if let Some(ref reg) = opts.vgrep {
-            match Regex::new(reg.as_str()) {
+            match RegexBuilder::new(reg.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
                 Err(e) => {
                     eprintln!("Regex error for {}:{}", reg, e);
@@ -784,6 +784,7 @@ struct Opts {
     grep: Option<String>,
     vgrep: Option<String>,
     word: bool,
+    icase: bool,
     limit: usize,
     width: usize,
     termfit: bool,
@@ -800,7 +801,7 @@ impl Opts {
     fn new() -> Self {
         let args: Vec<String> = std::env::args().collect();
         let mut opts = Options::new();
-        opts.optopt("i", "ip", "ip of server", "HOST");
+        opts.optopt("I", "ip", "ip of server", "HOST");
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
         opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
         opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
@@ -814,6 +815,7 @@ impl Opts {
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
+        opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
         opts.optflag("n", "onecolor", "Uniform highlighting");
@@ -851,12 +853,13 @@ impl Opts {
             }, None => mem::take(&mut matches.free),
         };
         Opts {
-            host: matches.opt_str("i").unwrap_or("127.0.0.1".to_string()),
+            host: matches.opt_str("I").unwrap_or("127.0.0.1".to_string()),
             fifo: matches.opt_present("f"),
             srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
             vgrep: matches.opt_str("v"),
             word: matches.opt_present("w"),
+            icase: matches.opt_present("i"),
             limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
             termfit: matches.opt_present("u"),
             width,
