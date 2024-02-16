@@ -19,6 +19,12 @@ inotify::{Inotify, WatchMask, WatchDescriptor},
 bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
 };
 
+macro_rules! die {
+    ($($arg:tt)*) => {{
+        eprintln!($($arg)*);
+        std::process::exit(0);
+    }};
+}
 
 const BUFSZ: usize = 1024*1024;
 const THEMES: [&'static str; 13] = [
@@ -275,8 +281,7 @@ fn server(rb: Arc<Mutex<RingBuf>>, has_data: Receiver<i32>, first_check: Sender<
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
         Err(_) => {
-            eprintln!("Could not bind to port. Is a server already running?");
-            process::exit(0);
+            die!("Could not bind to port. Is a server already running?");
         },
     };
     let clients1 = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
@@ -309,16 +314,14 @@ fn read_and_serve(opts: &Opts) {
         if opts.fifo {
             unix_named_pipe::create("rogfifo", Some(0o666)).expect("could not create fifo");
             if let Err(e) = fs::rename("rogfifo", path.as_str()) {
-                eprintln!("Move fifo error:{}",e);
-                process::exit(1);
+                die!("Move fifo error:{}",e);
             }
             let watchpath = path.clone();
             thread::spawn(move || {
                 while let Ok(_) = fs::metadata(&watchpath) {
                     thread::sleep(std::time::Duration::from_secs(3));
                 }
-                eprintln!("Fifo deleted, exiting");
-                process::exit(0);
+                die!("Fifo deleted, exiting");
             });
             let delpath = path.clone();
             ctrlc::set_handler(move || {
@@ -369,14 +372,12 @@ fn client(opts: &mut Opts) {
     let mut stream = match TcpStream::connect(format!("{}:19888",opts.host)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Counld not connect to {}. Error: {}", opts.host, e);
-            process::exit(0);
+            die!("Counld not connect to {}. Error: {}", opts.host, e);
         },
     };
     let mut buf = [0; BUFSZ];
     if let Err(e) = stream.write(&opts.limit.to_le_bytes()) {
-        eprintln!("Could not send control message. Error: {}", e);
-        process::exit(0);
+        die!("Could not send control message. Error: {}", e);
     }
     let dummy_name: String = Default::default();
     let mut printer = Printer::new(opts);
@@ -442,8 +443,7 @@ fn tail(opts: &mut Opts) {
     let not_files: Vec<&String> = opts.tailfiles.iter().filter(|path| match fs::metadata(path) {
                                            Err(_) => true, _ => false, }).collect();
     if !not_files.is_empty() {
-        eprintln!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
-        process::exit(0);
+        die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
     }
     let prefixlen = if opts.oldstyle { 0 } else {
         opts.tailfiles[0].chars().enumerate().take_while(|c| {
@@ -466,16 +466,14 @@ fn tail(opts: &mut Opts) {
                 let mut file = match File::open(path) {
                     Ok(f) => f,
                     Err(e) => {
-                        eprintln!("Error opening file:{}", e);
-                        process::exit(1);
+                        die!("Error opening file:{}", e);
                     },
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
                 let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i, &opts));
             },
             Err(e) => {
-                eprintln!("Error adding watch:{}", e);
-                process::exit(0);
+                die!("Error adding watch:{}", e);
             }
         }
     }
@@ -626,19 +624,19 @@ impl<'a,'b> LineSearcher<'a,'b> {
     fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
         let fields = match &self.parent.rem_fields {
             None => return Some(LineOut::Ref(line)),
-            Some(re) => re.find_iter(line),
+            Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect::<Vec<_>>(),
         };
-        let mut result = String::new();
-        let mut start: usize = 0;
-        fields.for_each(|m| {
-            if start < m.start() {
-                result += &line[start..m.start()];
-                start = m.end();
-            }
-        });
-        if start == 0 {
+        if fields.len() == 0 {
             return Some(LineOut::Ref(line))
         }
+        let mut result = String::new();
+        let mut start: usize = 0;
+        fields.iter().for_each(|pos| {
+            if start <= pos.0 {
+                result += &line[start..pos.0];
+                start = pos.1;
+            }
+        });
         result += &line[start..];
         Some(LineOut::Str(result))
     }
@@ -746,8 +744,7 @@ impl BufParser {
             match RegexBuilder::new(search.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    eprintln!("Regex error for {}:{}", search, e);
-                    process::exit(1);
+                    die!("Regex error for {}:{}", search, e);
                 },
             }
         } else { None };
@@ -755,8 +752,7 @@ impl BufParser {
             match RegexBuilder::new(reg.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    eprintln!("Regex error for {}:{}", reg, e);
-                    process::exit(1);
+                    die!("Regex error for {}:{}", reg, e);
                 },
             }
         } else { None };
@@ -823,16 +819,14 @@ impl Opts {
         let mut matches = match opts.parse(&args[1..]) {
             Ok(m) => { m },
             Err(e) => {
-                eprintln!("bad args:{}", e);
-                process::exit(1);
+                die!("bad args:{}", e);
             },
         };
         if matches.opt_present("h") {
-            println!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
-            process::exit(0);
+            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
         }
         let theme = match (matches.opt_present("c"), matches.opt_present("m")) {
-            (true,true) => panic!("Cannot use 'c' with 'm'"),
+            (true,true) => die!("Cannot use 'c' with 'm'"),
             (true,false) => None,
             (false,true) => matches.opt_str("m"),
             (false,false) =>  Some("Visual Studio Dark+".to_string()),
