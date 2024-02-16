@@ -512,7 +512,7 @@ enum LineOut<'b> {
 enum LineSource<'a,'b> {
     Regex(&'a Regex),
     Lines(RefCell<std::str::Lines<'b>>),
-    NoParse,
+    Blob,
 }
 struct LineSearcher<'a,'b> {
     strategy: LineSource<'a,'b>,
@@ -626,19 +626,19 @@ impl<'a,'b> LineSearcher<'a,'b> {
     fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
         let fields = match &self.parent.rem_fields {
             None => return Some(LineOut::Ref(line)),
-            Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect::<Vec<_>>(),
+            Some(re) => re.find_iter(line),
         };
-        if fields.len() == 0 {
-            return Some(LineOut::Ref(line))
-        }
         let mut result = String::new();
         let mut start: usize = 0;
-        fields.iter().for_each(|pos| {
-            if start <= pos.0 {
-                result += &line[start..pos.0];
-                start = pos.1;
+        fields.for_each(|m| {
+            if start < m.start() {
+                result += &line[start..m.start()];
+                start = m.end();
             }
         });
+        if start == 0 {
+            return Some(LineOut::Ref(line))
+        }
         result += &line[start..];
         Some(LineOut::Str(result))
     }
@@ -673,28 +673,26 @@ impl<'a,'b> LineSearcher<'a,'b> {
                     self.posstart = self.buf.len();
                     return Some(blob);
                 }
-                Some(re) => {
-                    loop {
-                        let chunk = &blob[self.posstart..];
-                        match re.find(chunk) {
-                            None => {
-                                self.posstart = self.buf.len();
-                                return Some(chunk)
-                            },
-                            Some(m) => {
-                                let cend = chunk.len();
-                                let start = match chunk[..m.start()].rfind('\n') { Some(i) => i, None => 0 };
-                                let end = match chunk[m.end()..].find('\n') { Some(i) => m.end()+i+1, None => cend };
-                                if start == 0 {
-                                    if end == cend {
-                                        return None
-                                    }
-                                    self.posstart += end;
-                                    continue;
+                Some(re) => loop {
+                    let chunk = &blob[self.posstart..];
+                    match re.find(chunk) {
+                        None => {
+                            self.posstart = self.buf.len();
+                            return Some(chunk)
+                        },
+                        Some(m) => {
+                            let cend = chunk.len();
+                            let start = match chunk[..m.start()].rfind('\n') { Some(i) => i, None => 0 };
+                            let end = match chunk[m.end()..].find('\n') { Some(i) => m.end()+i+1, None => cend };
+                            if start == 0 {
+                                if end == cend {
+                                    return None
                                 }
                                 self.posstart += end;
-                                return Some(&chunk[0..start])
+                                continue;
                             }
+                            self.posstart += end;
+                            return Some(&chunk[..start])
                         }
                     }
                 },
@@ -715,7 +713,7 @@ impl<'a,'b> Iterator for LineSearcher<'a,'b> {
                 }
             },
             LineSource::Lines(_) => self.getline(),
-            LineSource::NoParse => self.getblob(),
+            LineSource::Blob => self.getblob(),
         };
         self.remove_fields(res?)
     }
@@ -736,7 +734,7 @@ impl BufParser {
         match (&self.grep, self.need_lines) {
             (Some(r), _) => LineSearcher::new(LineSource::Regex(&r),buf, &self),
             (None, true) => LineSearcher::new(LineSource::Lines(RefCell::new(buf.lines())), buf, &self),
-            (None, false) => LineSearcher::new(LineSource::NoParse, buf, &self),
+            (None, false) => LineSearcher::new(LineSource::Blob, buf, &self),
         }
     }
 
