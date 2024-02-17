@@ -781,20 +781,29 @@ fn read_presets(swizzle: String, opts: &mut Opts) {
         let preset_map = rc_contents.lines().fold(HashMap::<&str,&str>::new(), |mut acc,line| {
             let mut vals = line.splitn(2, "=");
             acc.insert(
-                vals.next().unwrap(),
+                str::trim(vals.next().unwrap()),
                 vals.next().unwrap());
             acc
         });
         let argpat = Regex::new(r#"("[^"]*"|[^\s]*)"#).unwrap();
+        // apply presets for defaults and params
         let mut presets = vec!["default".to_string()];
-        opts.tailfiles.iter().for_each(|f|presets.push(f.rsplitn(2,'/').next().unwrap().to_string()));
         swizzle.chars().for_each(|c| presets.push(c.to_string()));
-        presets.iter().for_each(|ps| {
-            if let Some(argstr) = preset_map.get(&ps.to_string().as_str()) {
+        presets.iter().for_each(|key| {
+            if let Some(argstr) = preset_map.get(key.as_str()) {
                 let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
                 opts.merge(&mut Opts::newargs(&args, false));
             }
         });
+        // apply presets for files that could have been added by above params
+        let tailfiles = mem::take(&mut opts.tailfiles);
+        tailfiles.iter().map(|f|f.rsplitn(2,'/').next().unwrap()).for_each(|key| {
+            if let Some(argstr) = preset_map.get(key) {
+                let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
+                opts.merge(&mut Opts::newargs(&args, false));
+            }
+        });
+        opts.tailfiles = tailfiles;
     }
     if !opts.exclude.is_empty() {
         let re = Regex::new(format!("({})",opts.exclude.replace(",","|")).as_str()).unwrap();
