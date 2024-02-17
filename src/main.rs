@@ -1,5 +1,5 @@
 use {
-std::collections::HashMap,
+std::collections::{HashMap,HashSet},
 std::cell::RefCell,
 std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
 std::net::{ TcpListener, TcpStream},
@@ -138,6 +138,7 @@ impl<'c> Printer<'c> {
         if self.one_color {
             idx = None;
         }
+        //TODO: lazy_format
         match (self.inline_names, &mut self.color) {
             (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
             (false,Some(ref mut colorizer)) => colorizer.print(out.as_bytes(), idx),
@@ -503,6 +504,7 @@ fn tail(opts: &mut Opts) {
     }
 }
 
+// TODO: try Cow
 enum LineOut<'b> {
     Ref(&'b str),
     Str(String),
@@ -771,6 +773,35 @@ impl BufParser {
     }
 }
 
+fn read_presets(swizzle: String, opts: &mut Opts) {
+    let rogrc = std::env::var("HOME").unwrap() + "/.config/rogrc";
+    let contents = match File::open(rogrc) {
+        Ok(mut f) => {
+            let mut s = String::new();
+            f.read_to_string(&mut s).unwrap();
+            s
+        },
+        Err(_) => return,
+    };
+    let preset_map = contents.lines().fold(HashMap::<&str,&str>::new(), |mut acc,line| {
+        let mut vals = line.splitn(2, "=");
+        acc.insert(
+            vals.next().unwrap(),
+            vals.next().unwrap());
+        acc
+    });
+    let argpat = Regex::new(r#"("[^"]*"|[^\s]*)"#).unwrap();
+    let mut presets = vec!["default".to_string()];
+    swizzle.chars().for_each(|c| presets.push(c.to_string()));
+    presets.iter().for_each(|ps| {
+        if let Some(argstr) = preset_map.get(&ps.to_string().as_str()) {
+            let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
+            opts.merge(&mut Opts::newargs(&args, false));
+        }
+    });
+}
+
+//#[derive(Debug)]
 struct Opts {
     host: String,
     fifo: bool,
@@ -792,8 +823,34 @@ struct Opts {
     tailfiles: Vec<String>,
 }
 impl Opts {
+
+    fn merge(self: &mut Self, other: &mut Opts) {
+        if self.host.is_empty() { self.host = mem::take(&mut other.host); };
+        if self.grep == None { self.grep = other.grep.take(); };
+        if self.vgrep == None { self.vgrep = other.vgrep.take(); };
+        if self.srvpath == None { self.srvpath = other.srvpath.take(); };
+        if self.theme == None { self.theme = other.theme.take(); };
+        if self.fields == None { self.fields = other.fields.take(); };
+        self.fifo |= self.fifo;
+        self.word |= self.word;
+        self.icase |= self.icase;
+        self.termfit |= self.termfit;
+        self.onetheme |= self.onetheme;
+        self.server |= self.server;
+        self.oldstyle |= self.oldstyle;
+        self.limit = self.limit.max(other.limit);
+        self.width = self.width.max(other.width);
+        self.actx = self.actx.max(other.actx);
+        self.bctx = self.bctx.max(other.bctx);
+        self.tailfiles = self.tailfiles.iter().chain(other.tailfiles.iter())
+            .collect::<HashSet<&String>>().iter().map(|s|s.to_string()).collect();
+    }
+
     fn new() -> Self {
-        let args: Vec<String> = std::env::args().collect();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        Self::newargs(&args, true)
+    }
+    fn newargs(args: &Vec<String>, recurse: bool) -> Self {
         let mut opts = Options::new();
         opts.optopt("I", "ip", "ip of server", "HOST");
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
@@ -809,6 +866,7 @@ impl Opts {
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
+        opts.optopt("p", "presets", "Use preset args", "LETTER(S)");
         opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
@@ -816,7 +874,7 @@ impl Opts {
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("b", "break", "put file name in a line break between chunks rather than on the side");
         opts.optflag("h", "help", "print this help menu");
-        let mut matches = match opts.parse(&args[1..]) {
+        let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => {
                 die!("bad args:{}", e);
@@ -844,7 +902,7 @@ impl Opts {
                 matches.free.iter().filter(|x|!re.is_match(x)).map(|x|x.to_string()).collect()
             }, None => mem::take(&mut matches.free),
         };
-        Opts {
+        let mut opts = Opts {
             host: matches.opt_str("I").unwrap_or("127.0.0.1".to_string()),
             fifo: matches.opt_present("f"),
             srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
@@ -863,7 +921,11 @@ impl Opts {
             oldstyle: matches.opt_present("b"),
             tailfiles: infiles,
             onetheme: matches.opt_present("n"),
+        };
+        if recurse {
+            read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);
         }
+        opts
     }
 }
 
