@@ -22,7 +22,7 @@ bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input}
 macro_rules! die {
     ($($arg:tt)*) => {{
         eprintln!($($arg)*);
-        std::process::exit(0);
+        std::process::exit(1);
     }};
 }
 
@@ -382,16 +382,13 @@ fn client(opts: &mut Opts) {
     }
     let dummy_name: String = Default::default();
     let mut printer = Printer::new(opts);
-    let grepping = opts.grep != None;
     let finder = BufParser::new(opts);
     loop {
         match stream.read(&mut buf) {
             Ok(n) if n == 0 => return,
             Ok(mut n) => {
-                if grepping && n < buf.len()-1 {
-                    while buf[n-1] != b'\n' {
-                        n += stream.read(&mut buf[n..]).unwrap();
-                    }
+                while n < buf.len()-1 && buf[n-1] != b'\n' {
+                    n += stream.read(&mut buf[n..]).unwrap();
                 }
                 finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None));
                 io::stdout().flush().unwrap();
@@ -478,7 +475,6 @@ fn tail(opts: &mut Opts) {
             }
         }
     }
-    let grepping = opts.grep != None;
     let mut evbuf = [0; 1024];
     let mut buf = [0; BUFSZ];
     let mut printer = Printer::new(opts);
@@ -492,10 +488,8 @@ fn tail(opts: &mut Opts) {
                 if n == 0 {
                     continue;
                 }
-                if grepping && n < buf.len()-1 {
-                    while buf[n-1] != b'\n' {
-                        n += fi.file.read(&mut buf[n..]).unwrap();
-                    }
+                while n < buf.len()-1 && buf[n-1] != b'\n' {
+                    n += fi.file.read(&mut buf[n..]).unwrap();
                 }
                 finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
                 io::stdout().flush().unwrap();
@@ -758,11 +752,11 @@ impl BufParser {
                 },
             }
         } else { None };
-        let rem_fields = if let Some(csv) = &opts.fields {
-            Some(Regex::new(format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, csv.replace(",","|")).as_str())
+        let rem_fields = if !opts.fields.is_empty() {
+            Some(Regex::new(format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, opts.fields.replace(",","|")).as_str())
                                .expect("Could not parse field name into regex"))
         } else { None };
-        let need_lines = opts.fields != None || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
+        let need_lines = !opts.fields.is_empty() || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
         BufParser {
             grep,
             vgrep,
@@ -815,7 +809,7 @@ struct Opts {
     termfit: bool,
     theme: Option<String>,
     onetheme: bool,
-    fields: Option<String>,
+    fields: String,
     actx: usize,
     bctx: usize,
     server: bool,
@@ -830,7 +824,9 @@ impl Opts {
         if self.vgrep == None { self.vgrep = other.vgrep.take(); };
         if self.srvpath == None { self.srvpath = other.srvpath.take(); };
         if self.theme == None { self.theme = other.theme.take(); };
-        if self.fields == None { self.fields = other.fields.take(); };
+        self.fields = format!("{}{}{}",self.fields,
+                              if !self.fields.is_empty() && !other.fields.is_empty() {","} else {""},
+                              other.fields);
         self.fifo |= self.fifo;
         self.word |= self.word;
         self.icase |= self.icase;
@@ -897,8 +893,8 @@ impl Opts {
             matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
         };
         let infiles = match matches.opt_str("x") {
-            Some(pat) => {
-                let re = Regex::new(pat.as_str()).unwrap();
+            Some(exclude) => {
+                let re = Regex::new(format!("({})",exclude.replace(",","|")).as_str()).unwrap();
                 matches.free.iter().filter(|x|!re.is_match(x)).map(|x|x.to_string()).collect()
             }, None => mem::take(&mut matches.free),
         };
@@ -914,7 +910,7 @@ impl Opts {
             termfit: matches.opt_present("u"),
             width,
             theme,
-            fields: matches.opt_str("r"),
+            fields: matches.opt_str("r").unwrap_or(Default::default()),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
