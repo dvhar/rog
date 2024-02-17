@@ -769,33 +769,41 @@ impl BufParser {
 
 fn read_presets(swizzle: String, opts: &mut Opts) {
     let rogrc = std::env::var("HOME").unwrap() + "/.config/rogrc";
-    let contents = match File::open(rogrc) {
+    let rc_contents = match File::open(rogrc) {
         Ok(mut f) => {
             let mut s = String::new();
             f.read_to_string(&mut s).unwrap();
             s
         },
-        Err(_) => return,
+        Err(_) => "".to_string(),
     };
-    let preset_map = contents.lines().fold(HashMap::<&str,&str>::new(), |mut acc,line| {
-        let mut vals = line.splitn(2, "=");
-        acc.insert(
-            vals.next().unwrap(),
-            vals.next().unwrap());
-        acc
-    });
-    let argpat = Regex::new(r#"("[^"]*"|[^\s]*)"#).unwrap();
-    let mut presets = vec!["default".to_string()];
-    swizzle.chars().for_each(|c| presets.push(c.to_string()));
-    presets.iter().for_each(|ps| {
-        if let Some(argstr) = preset_map.get(&ps.to_string().as_str()) {
-            let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
-            opts.merge(&mut Opts::newargs(&args, false));
-        }
-    });
+    if !rc_contents.is_empty() {
+        let preset_map = rc_contents.lines().fold(HashMap::<&str,&str>::new(), |mut acc,line| {
+            let mut vals = line.splitn(2, "=");
+            acc.insert(
+                vals.next().unwrap(),
+                vals.next().unwrap());
+            acc
+        });
+        let argpat = Regex::new(r#"("[^"]*"|[^\s]*)"#).unwrap();
+        let mut presets = vec!["default".to_string()];
+        opts.tailfiles.iter().for_each(|f|presets.push(f.rsplitn(2,'/').next().unwrap().to_string()));
+        swizzle.chars().for_each(|c| presets.push(c.to_string()));
+        presets.iter().for_each(|ps| {
+            if let Some(argstr) = preset_map.get(&ps.to_string().as_str()) {
+                let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
+                opts.merge(&mut Opts::newargs(&args, false));
+            }
+        });
+    }
+    if !opts.exclude.is_empty() {
+        let re = Regex::new(format!("({})",opts.exclude.replace(",","|")).as_str()).unwrap();
+        opts.tailfiles = opts.tailfiles.iter().filter(|x|!re.is_match(x)).map(|x|x.to_string()).collect();
+    }
+    //println!("FIN:{:#?}", opts);
 }
 
-//#[derive(Debug)]
+#[derive(Debug)]
 struct Opts {
     host: String,
     fifo: bool,
@@ -810,6 +818,7 @@ struct Opts {
     theme: Option<String>,
     onetheme: bool,
     fields: String,
+    exclude: String,
     actx: usize,
     bctx: usize,
     server: bool,
@@ -827,17 +836,20 @@ impl Opts {
         self.fields = format!("{}{}{}",self.fields,
                               if !self.fields.is_empty() && !other.fields.is_empty() {","} else {""},
                               other.fields);
-        self.fifo |= self.fifo;
-        self.word |= self.word;
-        self.icase |= self.icase;
-        self.termfit |= self.termfit;
-        self.onetheme |= self.onetheme;
-        self.server |= self.server;
-        self.oldstyle |= self.oldstyle;
+        self.fifo |= other.fifo;
+        self.word |= other.word;
+        self.icase |= other.icase;
+        self.termfit |= other.termfit;
+        self.onetheme |= other.onetheme;
+        self.server |= other.server;
+        self.oldstyle |= other.oldstyle;
         self.limit = self.limit.max(other.limit);
         self.width = self.width.max(other.width);
         self.actx = self.actx.max(other.actx);
         self.bctx = self.bctx.max(other.bctx);
+        self.exclude = format!("{}{}{}",self.exclude,
+                              if !self.exclude.is_empty() && !other.exclude.is_empty() {","} else {""},
+                              other.exclude);
         self.tailfiles = self.tailfiles.iter().chain(other.tailfiles.iter())
             .collect::<HashSet<&String>>().iter().map(|s|s.to_string()).collect();
     }
@@ -862,7 +874,7 @@ impl Opts {
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
-        opts.optopt("p", "presets", "Use preset args", "LETTER(S)");
+        opts.optopt("p", "presets", "Use preset args", "CHARS");
         opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
@@ -892,12 +904,6 @@ impl Opts {
         } else {
             matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
         };
-        let infiles = match matches.opt_str("x") {
-            Some(exclude) => {
-                let re = Regex::new(format!("({})",exclude.replace(",","|")).as_str()).unwrap();
-                matches.free.iter().filter(|x|!re.is_match(x)).map(|x|x.to_string()).collect()
-            }, None => mem::take(&mut matches.free),
-        };
         let mut opts = Opts {
             host: matches.opt_str("I").unwrap_or("127.0.0.1".to_string()),
             fifo: matches.opt_present("f"),
@@ -915,7 +921,8 @@ impl Opts {
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
             oldstyle: matches.opt_present("b"),
-            tailfiles: infiles,
+            tailfiles: mem::take(&mut matches.free),
+            exclude: matches.opt_str("x").unwrap_or(Default::default()),
             onetheme: matches.opt_present("n"),
         };
         if recurse {
