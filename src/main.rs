@@ -769,30 +769,39 @@ impl BufParser {
 
 fn read_presets(swizzle: String, opts: &mut Opts) {
     let rogrc = std::env::var("HOME").unwrap() + "/.config/rogrc";
-    let rc_contents = match File::open(rogrc) {
+    let rc_contents = match File::open(rogrc.clone()) {
         Ok(mut f) => {
             let mut s = String::new();
             f.read_to_string(&mut s).unwrap();
             s
         },
-        Err(_) => "".to_string(),
+        Err(_) => {
+            let mut rcfile = File::create(rogrc).unwrap();
+            write!(rcfile, concat!("# Add command line args for default behavior and other presets.\n",
+                "# Format is 'key = whatever flags and args you want'\n",
+                "# 'key' can be 'default', a log file name, or a letter that you can then select with the -p flag.\n")).unwrap();
+            "".to_string()
+        },
     };
     if !rc_contents.is_empty() {
         let preset_map = rc_contents.lines().fold(HashMap::<&str,&str>::new(), |mut acc,line| {
+            if line.starts_with('#') { return acc; }
             let mut vals = line.splitn(2, "=");
             acc.insert(
                 str::trim(vals.next().unwrap()),
                 vals.next().unwrap());
             acc
         });
-        let argpat = Regex::new(r#"("[^"]*"|[^\s]*)"#).unwrap();
+        let argpat = Regex::new(r#"("[^"]+"|[^\s]+)"#).unwrap();
         // apply presets for defaults and params
         let mut presets = vec!["default".to_string()];
         swizzle.chars().for_each(|c| presets.push(c.to_string()));
         presets.iter().for_each(|key| {
             if let Some(argstr) = preset_map.get(key.as_str()) {
                 let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
-                opts.merge(&mut Opts::newargs(&args, false));
+                if !args.is_empty() {
+                    opts.merge(&mut Opts::newargs(&args, false));
+                }
             }
         });
         // apply presets for files that could have been added by above params
@@ -800,7 +809,9 @@ fn read_presets(swizzle: String, opts: &mut Opts) {
         tailfiles.iter().map(|f|f.rsplitn(2,'/').next().unwrap()).for_each(|key| {
             if let Some(argstr) = preset_map.get(key) {
                 let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
-                opts.merge(&mut Opts::newargs(&args, false));
+                if !args.is_empty() {
+                    opts.merge(&mut Opts::newargs(&args, false));
+                }
             }
         });
         opts.tailfiles = tailfiles;
@@ -884,6 +895,7 @@ impl Opts {
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
         opts.optopt("p", "presets", "Use preset args", "CHARS");
+        opts.optflag("P", "nopreset", "Do not load presets from rc file");
         opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
@@ -934,7 +946,7 @@ impl Opts {
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
             onetheme: matches.opt_present("n"),
         };
-        if recurse {
+        if recurse && !matches.opt_present("P") {
             read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);
         }
         opts
