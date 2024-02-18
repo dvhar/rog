@@ -14,3 +14,7 @@ inotify = "0.10.2"
 ansi_term = "0.12.1"
 regex = "1.10.2"
 termsize = "0.1"
+
+[profile.release]
+lto = true
+strip = true

@@ -620,19 +620,19 @@ impl<'a,'b> LineSearcher<'a,'b> {
     fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
         let fields = match &self.parent.rem_fields {
             None => return Some(LineOut::Ref(line)),
-            Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect::<Vec<_>>(),
+            Some(re) => re.find_iter(line),
         };
-        if fields.len() == 0 {
-            return Some(LineOut::Ref(line))
-        }
         let mut result = String::new();
         let mut start: usize = 0;
-        fields.iter().for_each(|pos| {
-            if start <= pos.0 {
-                result += &line[start..pos.0];
-                start = pos.1;
+        fields.for_each(|pos| {
+            if start <= pos.start() {
+                result += &line[start..pos.start()];
+                start = pos.end();
             }
         });
+        if start == 0 {
+            return Some(LineOut::Ref(line))
+        }
         result += &line[start..];
         Some(LineOut::Str(result))
     }
