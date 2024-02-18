@@ -1,4 +1,5 @@
 use {
+std::borrow::Cow,
 std::collections::{HashMap,HashSet},
 std::cell::RefCell,
 std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
@@ -108,18 +109,18 @@ impl<'c> Printer<'c> {
                 Some(theme) => Some(Colorizer::new(mem::take(theme))),
                 None => None,
             },
-            inline_names: !opts.oldstyle && multi,
-            header_names: opts.oldstyle && multi,
+            inline_names: opts.nameline && multi,
+            header_names: !opts.nameline && multi,
             prev_idx: 1000,
             width: opts.width,
             one_color: opts.onetheme,
         }
     }
 
-    fn print<'a,'b>(self: &'a mut Self, chunk: LineOut<'b>, name: &String, mut idx: Option<usize>) {
+    fn print<'a,'b>(self: &'a mut Self, chunk: Cow<'b,str>, name: &String, mut idx: Option<usize>) {
         let mut out = match chunk {
-            LineOut::Ref(r) => r,
-            LineOut::Str(ref s) => s.as_str(),
+            Cow::Borrowed(r) => r,
+            Cow::Owned(ref s) => s.as_str(),
         };
         if self.width > 0 {
             let mut idx = self.width.min(out.len());
@@ -138,11 +139,10 @@ impl<'c> Printer<'c> {
         if self.one_color {
             idx = None;
         }
-        //TODO: lazy_format
         match (self.inline_names, &mut self.color) {
-            (true,Some(ref mut colorizer)) => io::stdout().write_all(format!("{}{}", name, colorizer.string(out.as_bytes(), idx)).as_bytes()).unwrap(),
+            (true,Some(ref mut colorizer)) => write!(io::stdout(), "{}{}", name, colorizer.string(out.as_bytes(), idx)).unwrap(),
             (false,Some(ref mut colorizer)) => colorizer.print(out.as_bytes(), idx),
-            (true,None) => io::stdout().write_all(format!("{}{}", name, out).as_bytes()).unwrap(),
+            (true,None) => write!(io::stdout(), "{}{}", name, out).unwrap(),
             (false,None) => io::stdout().write_all(out.as_bytes()).unwrap(),
         }
         io::stdout().write("\n".as_bytes()).unwrap();
@@ -233,9 +233,7 @@ impl Client {
                 }
             },
             Ok(n) => eprintln!("read control message does not have 8 bytes, has:{}", n),
-            Err(e) => {
-                eprintln!("read control message error:{}", e);
-            },
+            Err(e) => eprintln!("read control message error:{}", e),
         }
         client
     }
@@ -281,9 +279,7 @@ fn write_to_clients(rb: Arc<Mutex<RingBuf>>, clients: Arc<Mutex<HashMap<i64,Clie
 fn server(rb: Arc<Mutex<RingBuf>>, has_data: Receiver<i32>, first_check: Sender<i32>) {
     let listener = match TcpListener::bind("0.0.0.0:19888") {
         Ok(l) => l,
-        Err(_) => {
-            die!("Could not bind to port. Is a server already running?");
-        },
+        Err(_) => die!("Could not bind to port. Is a server already running?"),
     };
     let clients1 = Arc::new(Mutex::new(HashMap::<i64,Client>::new()));
     let clients2 = clients1.clone();
@@ -372,9 +368,7 @@ fn read_to_ringbuf<T: Read>(mut reader: T, has_data: &Sender<i32>, rb: Arc<Mutex
 fn client(opts: &mut Opts) {
     let mut stream = match TcpStream::connect(format!("{}:19888",opts.host)) {
         Ok(s) => s,
-        Err(e) => {
-            die!("Counld not connect to {}. Error: {}", opts.host, e);
-        },
+        Err(e) => die!("Counld not connect to {}. Error: {}", opts.host, e),
     };
     let mut buf = [0; BUFSZ];
     if let Err(e) = stream.write(&opts.limit.to_le_bytes()) {
@@ -415,8 +409,8 @@ impl FileInfo {
             file: f,
             rawname: origpath.clone(),
             name: if io::stdout().is_terminal() {
-                if opts.oldstyle && opts.theme != None {
-                    Red.bold().on(Colour::RGB(20,15,10)).paint(name).to_string()
+                if !opts.nameline && opts.theme != None {
+                    Red.bold().paint(name).to_string()
                 } else {
                     COLORS[idx % COLORS.len()].bold().on(Colour::RGB(20,15,10)).paint(name).to_string()
                 }
@@ -443,18 +437,18 @@ fn tail(opts: &mut Opts) {
     if !not_files.is_empty() {
         die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
     }
-    let prefixlen = if opts.oldstyle { 0 } else {
+    let prefixlen = if !opts.nameline { 0 } else {
         opts.tailfiles[0].chars().enumerate().take_while(|c| {
             opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
     let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    if opts.oldstyle {
-        formatted_names = formatted_names.iter().map(|s|format!("=====> {} <=====", s)).collect();
-    } else {
+    if opts.nameline {
         let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
         if opts.termfit && opts.width > maxlen+1 {
             opts.width -= maxlen+1
         };
         formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
+    } else {
+        formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
     }
     let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
     let mut ino = Inotify::init().expect("Error initializing inotify instance");
@@ -463,16 +457,12 @@ fn tail(opts: &mut Opts) {
             Ok(wd) => {
                 let mut file = match File::open(path) {
                     Ok(f) => f,
-                    Err(e) => {
-                        die!("Error opening file:{}", e);
-                    },
+                    Err(e) => die!("Error opening file:{}", e),
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
                 let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i, &opts));
             },
-            Err(e) => {
-                die!("Error adding watch:{}", e);
-            }
+            Err(e) => die!("Error adding watch:{}", e),
         }
     }
     let mut evbuf = [0; 1024];
@@ -498,11 +488,6 @@ fn tail(opts: &mut Opts) {
     }
 }
 
-// TODO: try Cow
-enum LineOut<'b> {
-    Ref(&'b str),
-    Str(String),
-}
 enum LineSource<'a,'b> {
     Regex(&'a Regex),
     Lines(RefCell<std::str::Lines<'b>>),
@@ -617,9 +602,9 @@ impl<'a,'b> LineSearcher<'a,'b> {
         self.group.pop_front()
     }
 
-    fn remove_fields(&self, line: &'b str) -> Option<LineOut<'b>> {
+    fn remove_fields(&self, line: &'b str) -> Option<Cow<'b,str>> {
         let fields = match &self.parent.rem_fields {
-            None => return Some(LineOut::Ref(line)),
+            None => return Some(Cow::Borrowed(line)),
             Some(re) => re.find_iter(line),
         };
         let mut result = String::new();
@@ -631,10 +616,10 @@ impl<'a,'b> LineSearcher<'a,'b> {
             }
         });
         if start == 0 {
-            return Some(LineOut::Ref(line))
+            return Some(Cow::Borrowed(line))
         }
         result += &line[start..];
-        Some(LineOut::Str(result))
+        Some(Cow::Owned(result))
     }
 
     fn getline(&mut self) -> Option<&'b str> {
@@ -696,7 +681,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
 }
 
 impl<'a,'b> Iterator for LineSearcher<'a,'b> {
-    type Item = LineOut<'b>;
+    type Item = Cow<'b,str>;
     fn next(&mut self) -> Option<Self::Item> {
         let res = match &mut self.strategy {
             LineSource::Regex(_) => {
@@ -739,24 +724,20 @@ impl BufParser {
                 } else { mem::take(reg) };
             match RegexBuilder::new(search.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
-                Err(e) => {
-                    die!("Regex error for {}:{}", search, e);
-                },
+                Err(e) => die!("Regex error for {}:{}", search, e),
             }
         } else { None };
         let vgrep = if let Some(ref reg) = opts.vgrep {
             match RegexBuilder::new(reg.as_str()).case_insensitive(opts.icase).build() {
                 Ok(r) => Some(r),
-                Err(e) => {
-                    die!("Regex error for {}:{}", reg, e);
-                },
+                Err(e) => die!("Regex error for {}:{}", reg, e),
             }
         } else { None };
         let rem_fields = if !opts.fields.is_empty() {
             Some(Regex::new(format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, opts.fields.replace(",","|")).as_str())
                                .expect("Could not parse field name into regex"))
         } else { None };
-        let need_lines = !opts.fields.is_empty() || opts.width > 0 || (opts.tailfiles.len() > 1 && !opts.oldstyle);
+        let need_lines = !opts.fields.is_empty() || opts.width > 0 || (opts.tailfiles.len() > 1 && opts.nameline);
         BufParser {
             grep,
             vgrep,
@@ -842,7 +823,7 @@ struct Opts {
     actx: usize,
     bctx: usize,
     server: bool,
-    oldstyle: bool,
+    nameline: bool,
     tailfiles: Vec<String>,
 }
 impl Opts {
@@ -862,7 +843,7 @@ impl Opts {
         self.termfit |= other.termfit;
         self.onetheme |= other.onetheme;
         self.server |= other.server;
-        self.oldstyle |= other.oldstyle;
+        self.nameline |= other.nameline;
         self.limit = self.limit.max(other.limit);
         self.width = self.width.max(other.width);
         self.actx = self.actx.max(other.actx);
@@ -901,13 +882,11 @@ impl Opts {
         opts.optflag("c", "nocolor", "No syntax highlighting");
         opts.optflag("n", "onecolor", "Uniform highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
-        opts.optflag("b", "break", "put file name in a line break between chunks rather than on the side");
+        opts.optflag("b", "nameline", "put file name at the start of each line");
         opts.optflag("h", "help", "print this help menu");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
-            Err(e) => {
-                die!("bad args:{}", e);
-            },
+            Err(e) => die!("bad args:{}", e),
         };
         if matches.opt_present("h") {
             die!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
@@ -941,7 +920,7 @@ impl Opts {
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
-            oldstyle: matches.opt_present("b"),
+            nameline: matches.opt_present("b"),
             tailfiles: mem::take(&mut matches.free),
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
             onetheme: matches.opt_present("n"),
