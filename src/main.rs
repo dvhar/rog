@@ -469,15 +469,24 @@ fn tail(opts: &mut Opts) {
     let mut buf = [0; BUFSZ];
     let mut printer = Printer::new(opts);
     let finder = BufParser::new(opts);
+    if opts.tailfiles.is_empty() {
+        let dummy_name = "".to_string();
+        loop {
+            let mut n = io::stdin().read(&mut buf).unwrap();
+            if n == 0 { continue; }
+            while n < buf.len()-1 && buf[n-1] != b'\n' {
+                n += io::stdin().read(&mut buf[n..]).unwrap();
+            }
+            finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None));
+        }
+    }
     loop {
         let events = ino.read_events_blocking(&mut evbuf).expect("Error reading events");
         for e in events {
             if let Some(fi) = files.get_mut(&e.wd) {
                 fi.updatesize();
                 let mut n = fi.file.read(&mut buf).unwrap();
-                if n == 0 {
-                    continue;
-                }
+                if n == 0 { continue; }
                 while n < buf.len()-1 && buf[n-1] != b'\n' {
                     n += fi.file.read(&mut buf[n..]).unwrap();
                 }
@@ -610,7 +619,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
         let mut result = String::new();
         let mut start: usize = 0;
         fields.for_each(|pos| {
-            if start <= pos.start() {
+            if start < pos.start() {
                 result += &line[start..pos.start()];
                 start = pos.end();
             }
@@ -779,7 +788,9 @@ fn read_presets(swizzle: String, opts: &mut Opts) {
         swizzle.chars().for_each(|c| presets.push(c.to_string()));
         presets.iter().for_each(|key| {
             if let Some(argstr) = preset_map.get(key.as_str()) {
-                let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
+                let args = argpat.find_iter(argstr)
+                    .map(|s|s.as_str().trim_matches(|c|c=='"'||c=='\'').to_string())
+                    .collect::<Vec<String>>();
                 if !args.is_empty() {
                     opts.merge(&mut Opts::newargs(&args, false));
                 }
@@ -789,7 +800,9 @@ fn read_presets(swizzle: String, opts: &mut Opts) {
         let tailfiles = mem::take(&mut opts.tailfiles);
         tailfiles.iter().map(|f|f.rsplitn(2,'/').next().unwrap()).for_each(|key| {
             if let Some(argstr) = preset_map.get(key) {
-                let args = argpat.find_iter(argstr).map(|s|s.as_str().to_owned()).collect::<Vec<String>>();
+                let args = argpat.find_iter(argstr)
+                    .map(|s|s.as_str().trim_matches(|c|c=='"'||c=='\'').to_string())
+                    .collect::<Vec<String>>();
                 if !args.is_empty() {
                     opts.merge(&mut Opts::newargs(&args, false));
                 }
@@ -862,6 +875,7 @@ impl Opts {
     fn newargs(args: &Vec<String>, recurse: bool) -> Self {
         let mut opts = Options::new();
         opts.optopt("I", "ip", "ip of server", "HOST");
+        opts.optflag("k","client", "read from localhost in client mode");
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
         opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
         opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
@@ -905,7 +919,7 @@ impl Opts {
             matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
         };
         let mut opts = Opts {
-            host: matches.opt_str("I").unwrap_or("127.0.0.1".to_string()),
+            host: matches.opt_str("I").unwrap_or(if matches.opt_present("k") {"127.0.0.1".to_string()} else {Default::default()}),
             fifo: matches.opt_present("f"),
             srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
@@ -936,7 +950,7 @@ fn main() {
     let mut opts = Opts::new();
     if opts.server {
         read_and_serve(&opts);
-    } else if opts.tailfiles.is_empty() {
+    } else if !opts.host.is_empty() {
         client(&mut opts);
     } else {
         tail(&mut opts);
