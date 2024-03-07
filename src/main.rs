@@ -778,8 +778,8 @@ fn read_presets(swizzle: String, opts: &mut Opts) {
             if line.starts_with('#') { return acc; }
             let mut vals = line.splitn(2, "=");
             acc.insert(
-                str::trim(vals.next().unwrap()),
-                vals.next().unwrap());
+                str::trim(match vals.next() { Some(v) => v, None => return acc, }),
+                match vals.next() { Some(v) => v, None => return acc, });
             acc
         });
         let argpat = Regex::new(r#"("[^"]+"|[^\s]+)"#).unwrap();
