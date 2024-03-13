@@ -619,7 +619,7 @@ impl<'a,'b> LineSearcher<'a,'b> {
         let mut result = String::new();
         let mut start: usize = 0;
         fields.for_each(|pos| {
-            if start < pos.start() {
+            if start <= pos.start() {
                 result += &line[start..pos.start()];
                 start = pos.end();
             }
