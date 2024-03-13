@@ -1,6 +1,6 @@
 use {
 std::borrow::Cow,
-std::collections::{HashMap,HashSet},
+std::collections::{HashMap,BTreeSet},
 std::cell::RefCell,
 std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
 std::net::{ TcpListener, TcpStream},
@@ -865,7 +865,7 @@ impl Opts {
                               if !self.exclude.is_empty() && !other.exclude.is_empty() {","} else {""},
                               other.exclude);
         self.tailfiles = self.tailfiles.iter().chain(other.tailfiles.iter())
-            .collect::<HashSet<&String>>().iter().map(|s|s.to_string()).collect();
+            .collect::<BTreeSet<&String>>().iter().map(|s|s.to_string()).collect();
     }
 
     fn new() -> Self {
