@@ -11,13 +11,14 @@ std::sync::{Arc, Mutex},
 std::thread,
 std::collections::VecDeque,
 std::{fs,fs::File},
+std::path::PathBuf,
 regex::{Regex,RegexBuilder},
 termsize,
 ansi_term::{Colour, Colour::*},
 getopts::Options,
 ctrlc,
-inotify::{Inotify, WatchMask, WatchDescriptor},
 bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
+notify::{RecommendedWatcher, RecursiveMode, Watcher}
 };
 
 macro_rules! die {
@@ -450,22 +451,23 @@ fn tail(opts: &mut Opts) {
     } else {
         formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
     }
-    let mut files = HashMap::<WatchDescriptor,FileInfo>::new();
-    let mut ino = Inotify::init().expect("Error initializing inotify instance");
+    let mut files = HashMap::<PathBuf,FileInfo>::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
     for (i,path) in opts.tailfiles.iter().enumerate() {
-        match ino.watches().add(path, WatchMask::MODIFY) {
-            Ok(wd) => {
+        match watcher.watch(path.as_ref(), RecursiveMode::NonRecursive) {
+            Ok(()) => {
                 let mut file = match File::open(path) {
                     Ok(f) => f,
                     Err(e) => die!("Error opening file:{}", e),
                 };
                 file.seek(SeekFrom::End(0)).unwrap();
-                let _ = files.insert(wd, FileInfo::new(&formatted_names[i], path, file, i, &opts));
+                let _ = files.insert(PathBuf::from(path), FileInfo::new(&formatted_names[i], path, file, i, &opts));
             },
             Err(e) => die!("Error adding watch:{}", e),
         }
     }
-    let mut evbuf = [0; 1024];
+
     let mut buf = [0; BUFSZ];
     let mut printer = Printer::new(opts);
     let finder = BufParser::new(opts);
@@ -480,19 +482,23 @@ fn tail(opts: &mut Opts) {
             finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &dummy_name, None));
         }
     }
-    loop {
-        let events = ino.read_events_blocking(&mut evbuf).expect("Error reading events");
-        for e in events {
-            if let Some(fi) = files.get_mut(&e.wd) {
-                fi.updatesize();
-                let mut n = fi.file.read(&mut buf).unwrap();
-                if n == 0 { continue; }
-                while n < buf.len()-1 && buf[n-1] != b'\n' {
-                    n += fi.file.read(&mut buf[n..]).unwrap();
+    for rev in rx {
+        match rev {
+            Ok(ev) => {
+                for path in ev.paths.iter() {
+                    if let Some(fi) = files.get_mut(path) {
+                        fi.updatesize();
+                        let mut n = fi.file.read(&mut buf).unwrap();
+                        if n == 0 { continue; }
+                        while n < buf.len()-1 && buf[n-1] != b'\n' {
+                            n += fi.file.read(&mut buf[n..]).unwrap();
+                        }
+                        finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
+                        io::stdout().flush().unwrap();
+                    }
                 }
-                finder.getiter(&buf[..n]).for_each(|chunk| printer.print(chunk, &fi.name, Some(fi.idx)));
-                io::stdout().flush().unwrap();
-            }
+            },
+            Err(er) => eprintln!("EV Error:{}", er),
         }
     }
 }
