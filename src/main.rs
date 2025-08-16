@@ -18,7 +18,7 @@ ansi_term::{Colour, Colour::*},
 getopts::Options,
 ctrlc,
 bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
-notify::{RecommendedWatcher, RecursiveMode, Watcher}
+notify::{RecommendedWatcher, RecursiveMode, Watcher, event::{ModifyKind, DataChange}, EventKind::Modify},
 };
 
 macro_rules! die {
@@ -484,7 +484,7 @@ fn tail(opts: &mut Opts) {
     }
     for rev in rx {
         match rev {
-            Ok(ev) => {
+            Ok(ev) if ev.kind == Modify(ModifyKind::Data(DataChange::Any)) => {
                 for path in ev.paths.iter() {
                     if let Some(fi) = files.get_mut(path) {
                         fi.updatesize();
@@ -498,6 +498,7 @@ fn tail(opts: &mut Opts) {
                     }
                 }
             },
+            Ok(_) => {},
             Err(er) => eprintln!("EV Error:{}", er),
         }
     }
