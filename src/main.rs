@@ -18,7 +18,7 @@ ansi_term::{Colour, Colour::*},
 getopts::Options,
 ctrlc,
 bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
-notify::{RecommendedWatcher, RecursiveMode, Watcher, event::{ModifyKind, DataChange}, EventKind::Modify},
+notify::{Event, Error, RecommendedWatcher, RecursiveMode, Watcher, event::{ModifyKind, DataChange}, EventKind::Modify},
 };
 
 macro_rules! die {
@@ -953,6 +953,132 @@ impl Opts {
     }
 }
 
+enum Op {
+    Jmp(usize),
+    ReadNextFile(Receiver<Result<Event, Error>>),
+    ReadStdin,
+    PrintNameHeader,
+    PrintPlain,
+    PrintColor,
+}
+
+fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
+    let mut i = 0;
+    let mut readbytes = 0;
+    let mut buf = [0; BUFSZ];
+    let mut paths: Vec<_> = Vec::new();
+    let mut current_filename = String::new();
+    let mut files = tailfiles;
+    let mut prevfidx = 9999;
+    let mut fidx = 0;
+    let color = match &mut opts.theme {
+        Some(theme) => Some(RefCell::new(Colorizer::new(mem::take(theme)))),
+        None => None,
+    };
+    loop {
+        match ops[i] {
+            Op::Jmp(ip) => {
+				i = ip;
+				continue;
+            },
+            Op::ReadStdin => {
+                match io::stdin().read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) => eprintln!("read err:{}",e),
+                }
+            },
+            Op::ReadNextFile(ref rx) => {
+                if paths.len() == 0 {
+                    let rev = rx.recv().unwrap();
+                    match rev {
+                        Ok(ev) if ev.kind == Modify(ModifyKind::Data(DataChange::Any)) => {
+							paths = ev.paths;
+						},
+                        Ok(_) => { continue; },
+                        Err(er) => eprintln!("EV Error:{}", er),
+                    }
+                }
+				if let Some(path) = paths.pop() {
+					if let Some(fi) = files.get_mut(&path) {
+                        current_filename = fi.name.clone();
+                        prevfidx = fidx;
+                        fidx = fi.idx;
+						fi.updatesize();
+						let mut n = fi.file.read(&mut buf).unwrap();
+						if n == 0 { continue; }
+						while n < buf.len()-1 && buf[n-1] != b'\n' {
+							n += fi.file.read(&mut buf[n..]).unwrap();
+						}
+                        readbytes = n;
+					}
+				}
+            },
+            Op::PrintNameHeader => {
+                if fidx != prevfidx {
+                    println!("\n  {}", current_filename); 
+                }
+            },
+            Op::PrintPlain => {
+				io::stdout().write_all(&buf[..readbytes]).unwrap();
+                readbytes = 0;
+            },
+            Op::PrintColor => {
+                color.as_ref().unwrap().borrow_mut().print(&buf[..readbytes], Some(fidx));
+                readbytes = 0;
+            },
+        }
+        i += 1;
+    }
+}
+
+fn vm_tail(opts: &mut Opts) {
+    let not_files: Vec<&String> = opts.tailfiles.iter().filter(|path| match fs::metadata(path) {
+                                           Err(_) => true, _ => false, }).collect();
+    if !not_files.is_empty() {
+        die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
+    }
+    let prefixlen = if !opts.nameline { 0 } else {
+        opts.tailfiles[0].chars().enumerate().take_while(|c| {
+            opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
+    let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    if opts.nameline {
+        let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
+        if opts.termfit && opts.width > maxlen+1 {
+            opts.width -= maxlen+1
+        };
+        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
+    } else {
+        formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
+    }
+    let mut files = HashMap::<PathBuf,FileInfo>::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+    for (i,path) in opts.tailfiles.iter().enumerate() {
+        match watcher.watch(path.as_ref(), RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                let mut file = match File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => die!("Error opening file:{}", e),
+                };
+                file.seek(SeekFrom::End(0)).unwrap();
+                let pb = PathBuf::from(path);
+				let pb = fs::canonicalize(pb).unwrap();
+				println!("Watching path: {:?}", pb);
+                let _ = files.insert(pb, FileInfo::new(&formatted_names[i], path, file, i, &opts));
+            },
+            Err(e) => die!("Error adding watch:{}", e),
+        }
+    }
+	let ops = vec![
+		Op::ReadNextFile(rx),
+		Op::PrintNameHeader,
+		Op::PrintColor,
+		Op::Jmp(0),
+	];
+	runvm(ops, files, opts);
+}
+
 fn main() {
     let mut opts = Opts::new();
     if opts.server {
@@ -960,6 +1086,6 @@ fn main() {
     } else if !opts.host.is_empty() {
         client(&mut opts);
     } else {
-        tail(&mut opts);
+        vm_tail(&mut opts);
     }
 }
