@@ -953,9 +953,12 @@ impl Opts {
     }
 }
 
+#[derive(Debug)]
 enum Op {
     Jmp(usize),
     ReadNextFile(Receiver<Result<Event, Error>>),
+    SliceWhole,
+    SliceLine(usize),
     ReadStdin,
     PrintNameHeader,
     PrintPlain,
@@ -964,6 +967,8 @@ enum Op {
 
 fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
     let mut i = 0;
+    let mut ax = 0;
+    let mut bx = 0;
     let mut readbytes = 0;
     let mut buf = [0; BUFSZ];
     let mut paths: Vec<_> = Vec::new();
@@ -976,12 +981,14 @@ fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) 
         None => None,
     };
     loop {
+        //eprintln!("OP:{:?}", ops[i]);
         match ops[i] {
             Op::Jmp(ip) => {
 				i = ip;
 				continue;
             },
             Op::ReadStdin => {
+                bx = 0;
                 match io::stdin().read(&mut buf) {
                     Ok(n) if n > 0 => readbytes = n,
                     Ok(_) => return,
@@ -989,6 +996,7 @@ fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) 
                 }
             },
             Op::ReadNextFile(ref rx) => {
+                bx = 0;
                 if paths.len() == 0 {
                     let rev = rx.recv().unwrap();
                     match rev {
@@ -1014,18 +1022,26 @@ fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) 
 					}
 				}
             },
+            Op::SliceWhole => {
+                ax = 0;
+                bx = readbytes;
+            },
+            Op::SliceLine(ip) => {
+                if bx >= readbytes { i = ip; continue; }
+                ax = bx;
+                let nx = buf[bx..readbytes].iter().enumerate().find(|(_,b)|**b == b'\n');
+                bx = if let Some(n) = nx { (bx+n.0+1).min(readbytes) } else { readbytes };
+            },
             Op::PrintNameHeader => {
                 if fidx != prevfidx {
                     println!("\n  {}", current_filename); 
                 }
             },
             Op::PrintPlain => {
-				io::stdout().write_all(&buf[..readbytes]).unwrap();
-                readbytes = 0;
+                io::stdout().write_all(&buf[ax..bx]).unwrap();
             },
             Op::PrintColor => {
-                color.as_ref().unwrap().borrow_mut().print(&buf[..readbytes], Some(fidx));
-                readbytes = 0;
+                color.as_ref().unwrap().borrow_mut().print(&buf[ax..bx], Some(fidx));
             },
         }
         i += 1;
@@ -1071,10 +1087,14 @@ fn vm_tail(opts: &mut Opts) {
         }
     }
 	let ops = vec![
-		Op::ReadNextFile(rx),
-		Op::PrintNameHeader,
-		Op::PrintColor,
-		Op::Jmp(0),
+		//Op::ReadNextFile(rx),
+		Op::ReadStdin,
+        //Op::SetSliceWhole,
+        Op::SliceLine(0),
+		//Op::PrintNameHeader,
+        Op::PrintColor,
+		//Op::PrintPlain,
+		Op::Jmp(1),
 	];
 	runvm(ops, files, opts);
 }
