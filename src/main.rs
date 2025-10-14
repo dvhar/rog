@@ -963,6 +963,7 @@ enum Op {
     PrintNameHeader,
     PrintPlain,
     PrintColor,
+    Vgrep(Regex, usize),
 }
 
 fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
@@ -1032,6 +1033,12 @@ fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) 
                 let nx = buf[bx..readbytes].iter().enumerate().find(|(_,b)|**b == b'\n');
                 bx = if let Some(n) = nx { (bx+n.0+1).min(readbytes) } else { readbytes };
             },
+            Op::Vgrep(ref re, ip) => {
+                if re.is_match(unsafe{str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    i = ip;
+                    continue;
+                }
+            },
             Op::PrintNameHeader => {
                 if fidx != prevfidx {
                     println!("\n  {}", current_filename); 
@@ -1086,16 +1093,21 @@ fn vm_tail(opts: &mut Opts) {
             Err(e) => die!("Error adding watch:{}", e),
         }
     }
-	let ops = vec![
+
+	let mut ops = vec![
 		//Op::ReadNextFile(rx),
 		Op::ReadStdin,
-        //Op::SetSliceWhole,
         Op::SliceLine(0),
-		//Op::PrintNameHeader,
-        Op::PrintColor,
-		//Op::PrintPlain,
-		Op::Jmp(1),
-	];
+    ];
+    if let Some(ref re) = opts.vgrep {
+        match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
+            Ok(r) => ops.push(Op::Vgrep(r, 1)),
+            Err(e) => die!("Regex error for {}:{}", re, e),
+        }
+    }
+    ops.push(Op::PrintColor);
+    ops.push(Op::Jmp(1));
+
 	runvm(ops, files, opts);
 }
 
