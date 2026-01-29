@@ -14,7 +14,11 @@ ansi_term = "0.12.1"
 regex = "1.10.2"
 termsize = "0.1"
 notify = "6.1.1"
+ringbuffer = "0.16.0"
 
 [profile.release]
 lto = true
 strip = true
+
+[features]
+debug_log = []
