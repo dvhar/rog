@@ -514,6 +514,7 @@ pub fn vm_tail(opts: &mut Opts) {
         }
     }
 
+    let print_op = if opts.theme == None { Op::PrintPlain } else { Op::PrintColor };
     let mut ops = vec![
         if opts.tailfiles.is_empty() {
             Op::ReadStdin
@@ -539,17 +540,17 @@ pub fn vm_tail(opts: &mut Opts) {
                     ops.push(Op::BctxPrep);
                     let ctx_start = ops.len();
                     ops.push(Op::BctxNext);
-                    ops.push(Op::PrintColor);
+                    ops.push(print_op);
                     ops.push(Op::CtxJmp(ctx_start));
                 } else {
-                    ops.push(Op::PrintColor);
+                    ops.push(print_op);
                 }
                 ops.push(Op::Jmp(1));
             },
             Err(e) => die!("Regex error for {}:{}", re, e),
         }
     } else {
-        ops.push(Op::PrintColor);
+        ops.push(print_op);
         ops.push(Op::Jmp(1));
     }
 
