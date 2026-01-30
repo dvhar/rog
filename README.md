@@ -11,7 +11,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## test
 ```
-cargo test --test cli
+cargo test --test test
 ```
 
 ## debug logging
