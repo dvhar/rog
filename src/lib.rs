@@ -85,7 +85,7 @@ pub enum Op {
 }
 
 pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
-    dbug!("OPS: {:?}", ops);
+    eprintln!("OPS: {:?}", ops);
     let mut i = 0;
     let mut ax = 0;
     let mut bx = 0;
@@ -108,7 +108,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
         None => None,
     };
     loop {
-        dbug!("OP:{:?}", ops[i]);
+        dbug!("     OP:{:?}", ops[i]);
         match ops[i] {
             Op::Jmp(ip) => {
                 i = ip;
@@ -121,6 +121,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                     Ok(_) => return,
                     Err(e) => eprintln!("read err:{}",e),
                 }
+                rb.clear();
             },
             Op::ReadNextFile(ref rx) => {
                 bx = 0;
@@ -146,6 +147,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                             n += fi.file.read(&mut buf[n..]).unwrap();
                         }
                         readbytes = n;
+                        rb.clear();
                     }
                 }
             },
@@ -162,6 +164,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
             },
             Op::Vgrep(ref re, ip) => {
                 if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    line_num -= 1;
                     i = ip;
                     continue;
                 }
@@ -175,7 +178,6 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 last_grepped = line_num;
             },
             Op::RingbufAdd => {
-                dbug!("RingbufAdd: {}..{} '{}'", ax, bx, std::str::from_utf8(&buf[ax..bx]).unwrap());
                 rb.enqueue((ax,bx));
             },
             Op::BctxPrep => {
@@ -183,13 +185,17 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 bx_store = bx;
                 ctx_count = (opts.bctx as u64).min((line_num-1) as u64);
                 while rb.len() as i64 > (last_grepped - last_grepped_prev) {
-                    eprintln!("B rb len: {}  {}  {}", rb.len(), last_grepped, last_grepped_prev);
                     rb.dequeue();
                 }
             },
             Op::BctxNext => {
-                (ax, bx) = rb.dequeue().unwrap_or((ax_store, bx_store));
-                dbug!("BctxNext: {}..{} '{}'", ax, bx, std::str::from_utf8(&buf[ax..bx]).unwrap());
+                (ax, bx) = match rb.dequeue() {
+                    Some((a,b)) => (a,b),
+                    None => {
+                        ctx_count = 0;
+                        (ax_store, bx_store)
+                    },
+                };
             },
             Op::CtxJmp(ip) => {
                 if ctx_count > 0 {
