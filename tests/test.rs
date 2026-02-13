@@ -39,14 +39,11 @@ fn run_test_stdin(args: &[&str], input: &str, expected_output: &str) {
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
-
     let mut child = cmd.spawn().unwrap();
     let stdin = child.stdin.as_mut().unwrap();
     stdin.write_all(input.as_bytes()).unwrap();
-
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
-
     let stdout = String::from_utf8(output.stdout).unwrap();
     let trimmed_output = stdout.trim();
     if exp != trimmed_output {
@@ -77,9 +74,20 @@ fn test_grep_bctx() {
 
 #[test]
 fn test_grep_bctx_vgrep() {
-    let expected = r#"2023-11-12 20:48:30.244 INFO [src/main.rs:17] Done
+    let expected = r#"2023-11-12 20:48:30.241 INFO [src/main.rs:13] Starting up
+2023-11-12 20:48:30.241 WARN [src/main.rs:14] Just a warning
 2023-11-12 20:48:30.246 TRACE [src/lib.rs:11] Trace message
 2023-11-12 20:48:30.247 INFO [src/main.rs:18] More work
+2023-11-12 20:48:30.248 WARN [src/main.rs:19] Another warning
+2023-11-12 20:48:30.253 TRACE [src/lib.rs:13] Something to trace
+2023-11-12 20:48:30.254 INFO [src/main.rs:23] Initialization complete
+2023-11-12 20:48:30.255 WARN [src/main.rs:24] Minor issue detected
+2023-11-12 20:48:30.260 TRACE [src/lib.rs:15] Extra trace
+2023-11-12 20:48:30.261 INFO [src/main.rs:28] Shutting down
+2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
+2023-11-12 20:48:30.266 TRACE [src/lib.rs:17] Final trace
+2023-11-12 20:48:30.267 INFO [src/main.rs:32] System halted
+2023-11-12 20:48:30.268 WARN [src/main.rs:33] Post-shutdown warning
 "#;
-    run_test_stdin(&["-c", "-g", "More work", "-B2", "-v", "Debug info here"], TEST_INPUT, expected);
+    run_test_stdin(&["-c", "-g", "WARN", "-B2", "-v", "Debug info here"], TEST_INPUT, expected);
 }
