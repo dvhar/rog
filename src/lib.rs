@@ -25,8 +25,52 @@ macro_rules! dbug {
     }
 }
 
+#[macro_export]
+macro_rules! dbug_ops {
+    ($ops:expr) => {
+        #[cfg(feature = "debug_log")]
+        {
+            eprintln!("OPS:");
+            for (i, op) in $ops.iter().enumerate() {
+                eprintln!("  {:2}: {:#?}", i, op);
+            }
+        }
+    }
+}
+
 pub const BUFSZ: usize = 1024*1024;
 
+pub struct JumpPositions {
+    jumps: HashMap<i64,i64>,
+    unique_key: i64,
+}
+impl JumpPositions {
+    pub fn new() -> Self {
+        Self {
+            unique_key: -1,
+            jumps: Default::default(),
+        }
+    }
+    pub fn new_placeholder(&mut self) -> i64 {
+        self.unique_key -= 1;
+        self.unique_key
+    }
+    pub fn set_place(&mut self, placeholder: i64, val: usize) {
+        self.jumps.insert(placeholder, val as i64);
+    }
+    pub fn update_ops(&self, ops: &mut Vec<Op>) {
+        for op in ops.iter_mut(){
+            match op {
+                Op::Vgrep(_, ref mut idx) => {
+                    if *idx < 0 {
+                        *idx = *self.jumps.get(idx).expect("error in placeholder");
+                    }
+                },
+                _ => {},
+            }
+        };
+    }
+}
 
 pub struct FileInfo {
     pub file: File,
@@ -77,7 +121,7 @@ pub enum Op {
     PrintNameHeader,
     PrintPlain,
     PrintColor,
-    Vgrep(Regex, usize),
+    Vgrep(Regex, i64),
     Grep(Regex, usize),
     RingbufAdd,
     BctxPrep,
@@ -85,7 +129,7 @@ pub enum Op {
 }
 
 pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
-    eprintln!("OPS: {:?}", ops);
+    dbug_ops!(ops);
     let mut i = 0;
     let mut ax = 0;
     let mut bx = 0;
@@ -108,7 +152,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
         None => None,
     };
     loop {
-        dbug!("     OP:{:?}", ops[i]);
+        //dbug!("     OP:{:?}", ops[i]);
         match ops[i] {
             Op::Jmp(ip) => {
                 i = ip;
@@ -165,7 +209,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
             Op::Vgrep(ref re, ip) => {
                 if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
                     line_num -= 1;
-                    i = ip;
+                    i = ip as usize;
                     continue;
                 }
             },
@@ -258,6 +302,7 @@ pub fn vm_tail(opts: &mut Opts) {
             Err(e) => die!("Error adding watch:{}", e),
         }
     }
+    let mut jumps = JumpPositions::new();
 
     let print_op = if opts.theme == None { Op::PrintPlain } else { Op::PrintColor };
     let mut ops = vec![
@@ -268,11 +313,16 @@ pub fn vm_tail(opts: &mut Opts) {
         },
         Op::SliceLine(0),
     ];
-    if let Some(ref re) = opts.vgrep {
+    let mut maybe_vre = if let Some(ref re) = opts.vgrep {
         match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
-            Ok(r) => ops.push(Op::Vgrep(r, 1)),
+            Ok(r) => Some(r),
             Err(e) => die!("Regex error for {}:{}", re, e),
         }
+    } else {
+        None
+    };
+    if opts.bctx == 0 && !matches!(maybe_vre, None) {
+        ops.push(Op::Vgrep(maybe_vre.take().unwrap(), 1));
     }
     if let Some(ref re) = opts.grep {
         match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
@@ -285,7 +335,15 @@ pub fn vm_tail(opts: &mut Opts) {
                     ops.push(Op::BctxPrep);
                     let ctx_start = ops.len();
                     ops.push(Op::BctxNext);
+                    let mut vjump: i64 = 0;
+                    if let Some(vre) = maybe_vre {
+                        vjump = jumps.new_placeholder();
+                        ops.push(Op::Vgrep(vre, vjump));
+                    }
                     ops.push(print_op);
+                    if vjump != 0 {
+                        jumps.set_place(vjump, ops.len());
+                    }
                     ops.push(Op::CtxJmp(ctx_start));
                 } else {
                     ops.push(print_op);
@@ -298,5 +356,6 @@ pub fn vm_tail(opts: &mut Opts) {
     }
     ops.push(Op::Jmp(1));
 
+    jumps.update_ops(&mut ops);
     runvm(ops, files, opts);
 }
