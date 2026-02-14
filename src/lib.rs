@@ -66,6 +66,11 @@ impl JumpPositions {
                         *idx = *self.jumps.get(idx).expect("error in placeholder");
                     }
                 },
+                Op::BctxNext(ref mut idx) => {
+                    if *idx < 0 {
+                        *idx = *self.jumps.get(idx).expect("error in placeholder");
+                    }
+                },
                 _ => {},
             }
         };
@@ -125,7 +130,7 @@ pub enum Op {
     Grep(Regex, usize),
     RingbufAdd,
     BctxPrep,
-    BctxNext,
+    BctxNext(i64),
 }
 
 pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
@@ -230,13 +235,17 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 ctx_count = (opts.bctx as u64).min((line_num-1) as u64);
                 while rb.len() as i64 > (last_grepped - last_grepped_prev) {
                     rb.dequeue();
+                    ctx_count -= 1;
                 }
             },
-            Op::BctxNext => {
+            Op::BctxNext(ip) => {
                 (ax, bx) = match rb.dequeue() {
-                    Some((a,b)) => (a,b),
+                    Some((a,b)) => {
+                        (a,b)
+                    },
                     None => {
                         ctx_count = 0;
+                        i = ip as usize;
                         (ax_store, bx_store)
                     },
                 };
@@ -334,7 +343,8 @@ pub fn vm_tail(opts: &mut Opts) {
                 if opts.bctx > 0 {
                     ops.push(Op::BctxPrep);
                     let ctx_start = ops.len();
-                    ops.push(Op::BctxNext);
+                    let bjump = jumps.new_placeholder();
+                    ops.push(Op::BctxNext(bjump));
                     let mut vjump: i64 = 0;
                     if let Some(vre) = maybe_vre {
                         vjump = jumps.new_placeholder();
@@ -344,6 +354,7 @@ pub fn vm_tail(opts: &mut Opts) {
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
                     }
+                    jumps.set_place(bjump, ops.len());
                     ops.push(Op::CtxJmp(ctx_start));
                 } else {
                     ops.push(print_op);

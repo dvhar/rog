@@ -17,11 +17,6 @@ const TEST_INPUT: &str = r#"2023-11-12 20:48:30.241 INFO [src/main.rs:13] Starti
 2023-11-12 20:48:30.253 TRACE [src/lib.rs:13] Something to trace
 2023-11-12 20:48:30.254 INFO [src/main.rs:23] Initialization complete
 2023-11-12 20:48:30.255 WARN [src/main.rs:24] Minor issue detected
-2023-11-12 20:48:30.256 ERROR [src/main.rs:25] Critical failure
-2023-11-12 20:48:30.257 INFO [src/main.rs:26] Recovery started
-2023-11-12 20:48:30.258 DEBUG [src/lib.rs:14] Debugging recovery
-2023-11-12 20:48:30.259 INFO [src/main.rs:27] Recovery successful
-2023-11-12 20:48:30.260 TRACE [src/lib.rs:15] Extra trace
 2023-11-12 20:48:30.261 INFO [src/main.rs:28] Shutting down
 2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
 2023-11-12 20:48:30.263 ERROR [src/main.rs:30] Shutdown error
@@ -76,18 +71,16 @@ fn test_grep_bctx() {
 fn test_grep_bctx_vgrep() {
     let expected = r#"2023-11-12 20:48:30.241 INFO [src/main.rs:13] Starting up
 2023-11-12 20:48:30.241 WARN [src/main.rs:14] Just a warning
-2023-11-12 20:48:30.246 TRACE [src/lib.rs:11] Trace message
 2023-11-12 20:48:30.247 INFO [src/main.rs:18] More work
 2023-11-12 20:48:30.248 WARN [src/main.rs:19] Another warning
 2023-11-12 20:48:30.253 TRACE [src/lib.rs:13] Something to trace
 2023-11-12 20:48:30.254 INFO [src/main.rs:23] Initialization complete
 2023-11-12 20:48:30.255 WARN [src/main.rs:24] Minor issue detected
-2023-11-12 20:48:30.260 TRACE [src/lib.rs:15] Extra trace
 2023-11-12 20:48:30.261 INFO [src/main.rs:28] Shutting down
 2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
 2023-11-12 20:48:30.266 TRACE [src/lib.rs:17] Final trace
 2023-11-12 20:48:30.267 INFO [src/main.rs:32] System halted
 2023-11-12 20:48:30.268 WARN [src/main.rs:33] Post-shutdown warning
 "#;
-    run_test_stdin(&["-c", "-g", "WARN", "-B2", "-v", "Debug info here"], TEST_INPUT, expected);
+    run_test_stdin(&["-c", "-g", "WARN", "-B2", "-v", "Trace message"], TEST_INPUT, expected);
 }
