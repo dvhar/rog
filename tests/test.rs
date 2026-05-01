@@ -161,3 +161,34 @@ fn test_wgrep_substring_match() {
 fn test_wgrep_no_partial_match() {
     run_test_stdin(&["-c", "-w", "warn"], TEST_INPUT, "");
 }
+
+/// -A (after context): prints N lines after each grep match
+#[test]
+fn test_grep_actx() {
+    let expected = r#"2023-11-12 20:48:30.243 ERROR [src/main.rs:16] Oups, an error
+2023-11-12 20:48:30.244 INFO [src/main.rs:17] Done
+2023-11-12 20:48:30.249 ERROR [src/main.rs:20] Second error
+2023-11-12 20:48:30.250 INFO [src/main.rs:21] Wrapping up
+2023-11-12 20:48:30.263 ERROR [src/main.rs:30] Shutdown error
+2023-11-12 20:48:30.264 INFO [src/main.rs:31] Shutdown complete
+2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
+    run_test_stdin(&["-c", "-g", "ERROR", "-A1"], TEST_INPUT, expected);
+}
+
+/// -A with overlapping context: when a match appears within the context window
+/// of a previous match, the counter resets and we get N new lines after it
+#[test]
+fn test_grep_actx_overlap() {
+    // 4 ERRORs total. The 4th (Post-shutdown error) is outside any context window.
+    let expected = r#"2023-11-12 20:48:30.243 ERROR [src/main.rs:16] Oups, an error
+2023-11-12 20:48:30.244 INFO [src/main.rs:17] Done
+2023-11-12 20:48:30.245 DEBUG [src/lib.rs:10] Debug info here
+2023-11-12 20:48:30.249 ERROR [src/main.rs:20] Second error
+2023-11-12 20:48:30.250 INFO [src/main.rs:21] Wrapping up
+2023-11-12 20:48:30.251 DEBUG [src/lib.rs:12] Additional debug
+2023-11-12 20:48:30.263 ERROR [src/main.rs:30] Shutdown error
+2023-11-12 20:48:30.264 INFO [src/main.rs:31] Shutdown complete
+2023-11-12 20:48:30.265 DEBUG [src/lib.rs:16] Final debug
+2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
+    run_test_stdin(&["-c", "-g", "ERROR", "-A2"], TEST_INPUT, expected);
+}

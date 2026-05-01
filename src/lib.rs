@@ -71,6 +71,11 @@ impl JumpPositions {
                         *idx = *self.jumps.get(idx).expect("error in placeholder");
                     }
                 },
+                Op::ActxJmp(ref mut idx) => {
+                    if *idx < 0 {
+                        *idx = *self.jumps.get(idx).expect("error in placeholder");
+                    }
+                },
                 _ => {},
             }
         };
@@ -133,6 +138,8 @@ pub enum Op {
     BctxPrep,
     BctxNext(i64),
     SetGrepPos,
+    ActxJmp(i64),
+    ActxReset(Regex),
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -153,6 +160,8 @@ impl Clone for Op {
             Op::RingbufAdd => Op::RingbufAdd,
             Op::BctxPrep => Op::BctxPrep,
             Op::SetGrepPos => Op::SetGrepPos,
+            Op::ActxJmp(v) => Op::ActxJmp(*v),
+            Op::ActxReset(re) => Op::ActxReset(re.clone()),
         }
     }
 }
@@ -176,6 +185,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
     let mut last_grepped_prev: i64 = 0;
     let mut line_num: i64 = 0;
     let mut ctx_count: u64 = 0;
+    let mut actx: usize = 0;
     let mut matched = false;
     let color = match &mut opts.theme {
         Some(theme) => Some(RefCell::new(Colorizer::new(mem::take(theme)))),
@@ -283,6 +293,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 if matched {
                     last_grepped_prev = last_grepped;
                     last_grepped = line_num;
+                    actx = opts.actx;
                 }
             },
             Op::PrintNameHeader => {
@@ -295,6 +306,21 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
             },
             Op::PrintColor => {
                 color.as_ref().unwrap().borrow_mut().print(&buf[ax..bx], Some(fidx));
+            },
+            Op::ActxJmp(ip) => {
+                if actx > 0 {
+                    actx -= 1;
+                    i = ip as usize;
+                    continue;
+                }
+            },
+            Op::ActxReset(ref re) => {
+                if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    actx = opts.actx;
+                    last_grepped_prev = last_grepped;
+                    last_grepped = line_num;
+                    rb.enqueue((ax, bx));
+                }
             },
         }
         i += 1;
@@ -359,13 +385,14 @@ pub fn vm_tail(opts: &mut Opts) {
         None
     };
     let mut vgreps_jump: Option<i64> = None;
-    if opts.bctx == 0 && !matches!(maybe_vre, None) {
+    if opts.bctx == 0 && opts.actx == 0 && !matches!(maybe_vre, None) {
         let vgreps = jumps.new_placeholder();
         ops.push(Op::Match(maybe_vre.take().unwrap()));
         ops.push(Op::MatchJmp(vgreps));
         vgreps_jump = Some(vgreps);
     }
     let mut skip_print: Option<i64> = None;
+    let mut actx_print: Option<i64> = None;
     if let Some(ref re) = opts.grep {
         let search = if opts.word {
             format!("\\b{}\\b", re)
@@ -374,6 +401,10 @@ pub fn vm_tail(opts: &mut Opts) {
         };
         match RegexBuilder::new(search.as_str()).case_insensitive(opts.icase).build() {
             Ok(r) => {
+                if opts.actx > 0 {
+                    actx_print = Some(jumps.new_placeholder());
+                    ops.push(Op::ActxJmp(actx_print.unwrap()));
+                }
                 ops.push(Op::Match(r.clone()));
                 ops.push(Op::SetGrepPos);
                 if opts.bctx > 0 {
@@ -388,9 +419,9 @@ pub fn vm_tail(opts: &mut Opts) {
                     let bjump = jumps.new_placeholder();
                     ops.push(Op::BctxNext(bjump));
                     let mut vjump: i64 = 0;
-                    if let Some(vre) = maybe_vre {
+                    if let Some(ref vre) = maybe_vre {
                         vjump = jumps.new_placeholder();
-                        ops.push(Op::Match(vre));
+                        ops.push(Op::Match(vre.clone()));
                         ops.push(Op::MatchJmp(vjump));
                     }
                     ops.push(print_op.clone());
@@ -401,6 +432,27 @@ pub fn vm_tail(opts: &mut Opts) {
                     ops.push(Op::CtxJmp(ctx_start));
                 } else {
                     ops.push(print_op.clone());
+                }
+                ops.push(Op::Jmp(1));
+                if opts.actx > 0 {
+                    let actx_target = ops.len();
+                    let mut vjump: i64 = 0;
+                    if let Some(ref vre) = maybe_vre {
+                        vjump = jumps.new_placeholder();
+                        ops.push(Op::Match(vre.clone()));
+                        ops.push(Op::MatchJmp(vjump));
+                    }
+                    ops.push(Op::ActxReset(r.clone()));
+                    if opts.theme == None {
+                        ops.push(Op::PrintPlain);
+                    } else {
+                        ops.push(Op::PrintColor);
+                    }
+                    if vjump != 0 {
+                        jumps.set_place(vjump, ops.len());
+                    }
+                    ops.push(Op::Jmp(1));
+                    jumps.set_place(actx_print.unwrap(), actx_target);
                 }
             },
             Err(e) => die!("Regex error for {}:{}", search, e),
