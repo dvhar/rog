@@ -192,3 +192,21 @@ fn test_grep_actx_overlap() {
 2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
     run_test_stdin(&["-c", "-g", "ERROR", "-A2"], TEST_INPUT, expected);
 }
+
+/// -C (context): activates both before-context (-B) and after-context (-A)
+/// with the same line count, showing surrounding lines for each match
+#[test]
+fn test_grep_context() {
+    let expected = r#"2023-11-12 20:48:30.242 INFO [src/main.rs:15] Doing stuff
+2023-11-12 20:48:30.243 ERROR [src/main.rs:16] Oups, an error
+2023-11-12 20:48:30.244 INFO [src/main.rs:17] Done
+2023-11-12 20:48:30.248 WARN [src/main.rs:19] Another warning
+2023-11-12 20:48:30.249 ERROR [src/main.rs:20] Second error
+2023-11-12 20:48:30.250 INFO [src/main.rs:21] Wrapping up
+2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
+2023-11-12 20:48:30.263 ERROR [src/main.rs:30] Shutdown error
+2023-11-12 20:48:30.264 INFO [src/main.rs:31] Shutdown complete
+2023-11-12 20:48:30.268 WARN [src/main.rs:33] Post-shutdown warning
+2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
+    run_test_stdin(&["-c", "-g", "ERROR", "-C1"], TEST_INPUT, expected);
+}
