@@ -144,3 +144,20 @@ fn test_grep_vgrep_no_bctx() {
 2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
     run_test_stdin(&["-c", "-g", "ERROR", "-v", "Shutdown"], TEST_INPUT, expected);
 }
+
+/// -w (word-boundary grep): substring "warn" should match "warning" with plain -g
+#[test]
+fn test_wgrep_substring_match() {
+    let expected = r#"2023-11-12 20:48:30.241 WARN [src/main.rs:14] Just a warning
+2023-11-12 20:48:30.248 WARN [src/main.rs:19] Another warning
+2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
+2023-11-12 20:48:30.268 WARN [src/main.rs:33] Post-shutdown warning"#;
+    run_test_stdin(&["-c", "-g", "warn"], TEST_INPUT, expected);
+}
+
+/// -w (word-boundary grep): "warn" as a whole word does not appear in input,
+/// so -w "warn" should match nothing (word boundaries prevent "warning" from matching)
+#[test]
+fn test_wgrep_no_partial_match() {
+    run_test_stdin(&["-c", "-w", "warn"], TEST_INPUT, "");
+}

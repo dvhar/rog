@@ -367,7 +367,12 @@ pub fn vm_tail(opts: &mut Opts) {
     }
     let mut skip_print: Option<i64> = None;
     if let Some(ref re) = opts.grep {
-        match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
+        let search = if opts.word {
+            format!("\\b{}\\b", re)
+        } else {
+            re.to_string()
+        };
+        match RegexBuilder::new(search.as_str()).case_insensitive(opts.icase).build() {
             Ok(r) => {
                 ops.push(Op::Match(r.clone()));
                 ops.push(Op::SetGrepPos);
@@ -398,7 +403,7 @@ pub fn vm_tail(opts: &mut Opts) {
                     ops.push(print_op.clone());
                 }
             },
-            Err(e) => die!("Regex error for {}:{}", re, e),
+            Err(e) => die!("Regex error for {}:{}", search, e),
         }
     } else {
         ops.push(print_op.clone());
