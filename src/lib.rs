@@ -61,7 +61,7 @@ impl JumpPositions {
     pub fn update_ops(&self, ops: &mut Vec<Op>) {
         for op in ops.iter_mut(){
             match op {
-                Op::Vgrep(_, ref mut idx) => {
+                Op::MatchJmp(ref mut idx) => {
                     if *idx < 0 {
                         *idx = *self.jumps.get(idx).expect("error in placeholder");
                     }
@@ -126,11 +126,35 @@ pub enum Op {
     PrintNameHeader,
     PrintPlain,
     PrintColor,
-    Vgrep(Regex, i64),
-    Grep(Regex, usize),
+    Match(Regex),
+    Invert,
+    MatchJmp(i64),
     RingbufAdd,
     BctxPrep,
     BctxNext(i64),
+    SetGrepPos,
+}
+impl Clone for Op {
+    fn clone(&self) -> Self {
+        match self {
+            Op::ReadNextFile(_) => unreachable!("ReadNextFile should never be cloned"),
+            Op::Jmp(v) => Op::Jmp(*v),
+            Op::CtxJmp(v) => Op::CtxJmp(*v),
+            Op::SliceLine(v) => Op::SliceLine(*v),
+            Op::MatchJmp(v) => Op::MatchJmp(*v),
+            Op::BctxNext(v) => Op::BctxNext(*v),
+            Op::Match(re) => Op::Match(re.clone()),
+            Op::ReadStdin => Op::ReadStdin,
+            Op::SliceWhole => Op::SliceWhole,
+            Op::PrintNameHeader => Op::PrintNameHeader,
+            Op::PrintPlain => Op::PrintPlain,
+            Op::PrintColor => Op::PrintColor,
+            Op::Invert => Op::Invert,
+            Op::RingbufAdd => Op::RingbufAdd,
+            Op::BctxPrep => Op::BctxPrep,
+            Op::SetGrepPos => Op::SetGrepPos,
+        }
+    }
 }
 
 pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
@@ -152,6 +176,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
     let mut last_grepped_prev: i64 = 0;
     let mut line_num: i64 = 0;
     let mut ctx_count: u64 = 0;
+    let mut matched = false;
     let color = match &mut opts.theme {
         Some(theme) => Some(RefCell::new(Colorizer::new(mem::take(theme)))),
         None => None,
@@ -211,20 +236,17 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 bx = if let Some(n) = nx { (bx+n.0+1).min(readbytes) } else { readbytes };
                 line_num += 1;
             },
-            Op::Vgrep(ref re, ip) => {
-                if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
-                    line_num -= 1;
+            Op::Match(ref re) => {
+                matched = re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])});
+            },
+            Op::Invert => {
+                matched = !matched;
+            },
+            Op::MatchJmp(ip) => {
+                if matched {
                     i = ip as usize;
                     continue;
                 }
-            },
-            Op::Grep(ref re, ip) => {
-                if !re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
-                    i = ip;
-                    continue;
-                }
-                last_grepped_prev = last_grepped;
-                last_grepped = line_num;
             },
             Op::RingbufAdd => {
                 rb.enqueue((ax,bx));
@@ -255,6 +277,12 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                     ctx_count -= 1;
                     i = ip;
                     continue;
+                }
+            },
+            Op::SetGrepPos => {
+                if matched {
+                    last_grepped_prev = last_grepped;
+                    last_grepped = line_num;
                 }
             },
             Op::PrintNameHeader => {
@@ -330,16 +358,25 @@ pub fn vm_tail(opts: &mut Opts) {
     } else {
         None
     };
+    let mut vgreps_jump: Option<i64> = None;
     if opts.bctx == 0 && !matches!(maybe_vre, None) {
-        ops.push(Op::Vgrep(maybe_vre.take().unwrap(), 1));
+        let vgreps = jumps.new_placeholder();
+        ops.push(Op::Match(maybe_vre.take().unwrap()));
+        ops.push(Op::MatchJmp(vgreps));
+        vgreps_jump = Some(vgreps);
     }
+    let mut skip_print: Option<i64> = None;
     if let Some(ref re) = opts.grep {
         match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
             Ok(r) => {
+                ops.push(Op::Match(r.clone()));
+                ops.push(Op::SetGrepPos);
                 if opts.bctx > 0 {
                     ops.push(Op::RingbufAdd);
                 }
-                ops.push(Op::Grep(r, 1));
+                ops.push(Op::Invert);
+                skip_print = Some(jumps.new_placeholder());
+                ops.push(Op::MatchJmp(skip_print.unwrap()));
                 if opts.bctx > 0 {
                     ops.push(Op::BctxPrep);
                     let ctx_start = ops.len();
@@ -348,22 +385,29 @@ pub fn vm_tail(opts: &mut Opts) {
                     let mut vjump: i64 = 0;
                     if let Some(vre) = maybe_vre {
                         vjump = jumps.new_placeholder();
-                        ops.push(Op::Vgrep(vre, vjump));
+                        ops.push(Op::Match(vre));
+                        ops.push(Op::MatchJmp(vjump));
                     }
-                    ops.push(print_op);
+                    ops.push(print_op.clone());
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
                     }
                     jumps.set_place(bjump, ops.len());
                     ops.push(Op::CtxJmp(ctx_start));
                 } else {
-                    ops.push(print_op);
+                    ops.push(print_op.clone());
                 }
             },
             Err(e) => die!("Regex error for {}:{}", re, e),
         }
     } else {
-        ops.push(print_op);
+        ops.push(print_op.clone());
+    }
+    if let Some(sp) = skip_print {
+        jumps.set_place(sp, ops.len());
+    }
+    if let Some(vj) = vgreps_jump {
+        jumps.set_place(vj, ops.len());
     }
     ops.push(Op::Jmp(1));
 

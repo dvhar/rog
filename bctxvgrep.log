@@ -1,0 +1,12 @@
+2023-11-12 20:48:30.241 INFO [src/main.rs:13] Starting up
+2023-11-12 20:48:30.241 WARN [src/main.rs:14] Just a warning
+2023-11-12 20:48:30.247 INFO [src/main.rs:18] More work
+2023-11-12 20:48:30.248 WARN [src/main.rs:19] Another warning
+2023-11-12 20:48:30.253 TRACE [src/lib.rs:13] Something to trace
+2023-11-12 20:48:30.254 INFO [src/main.rs:23] Initialization complete
+2023-11-12 20:48:30.255 WARN [src/main.rs:24] Minor issue detected
+2023-11-12 20:48:30.261 INFO [src/main.rs:28] Shutting down
+2023-11-12 20:48:30.262 WARN [src/main.rs:29] Shutdown warning
+2023-11-12 20:48:30.266 TRACE [src/lib.rs:17] Final trace
+2023-11-12 20:48:30.267 INFO [src/main.rs:32] System halted
+2023-11-12 20:48:30.268 WARN [src/main.rs:33] Post-shutdown warning
