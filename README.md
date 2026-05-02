@@ -1,12 +1,12 @@
 # rog
 
-Halfway between `tail -f` and `lnav`. A versatile log reader for filtering, monitoring, and serving log data.
+Halfway between `tail -f` and `lnav`. A log reader for filtering, monitoring, and serving log data.
 
 ## Modes
 
 - **Tail mode** — Monitor files in real-time: `rog app.log error.log`
-- **FIFO mode** — Create and read from a named pipe: `rog -f /tmp/myfifo`
-- **Server mode** — Read stdin and serve over TCP: `some_program | rog -s`
+- **FIFO mode** — Create and read from a named pipe: `rog -f /tmp/myfifo`. Useful with server mode.
+- **Server mode** — Read from any source and serve over TCP to clients: `some_program | rog -s` or `rog -s -f /tmp/myfifo`
 - **Client mode** — Connect to a rog server: `rog -k` (localhost) or `rog -I 10.0.0.4`
 
 ## Filtering
@@ -50,13 +50,19 @@ rog -f /tmp/myfifo
 rog app.log -r password,token -m Nord
 ```
 
-## Presets
+## Config
 
-Default config at `~/.config/rogrc`. Set persistent options:
+Config at `~/.config/rogrc`. Lines follow the format `key = args`, where `key` can be:
+
+- `default` — Always applied
+- A log filename — Applied when that file is passed as an argument
+- A single letter — Invoked with `-p` (e.g., `-p ab` combines presets `a` and `b`)
 
 ```
 default = -m Dracula -u
 myapp.log = -g "^ERROR|^WARN" -C2
+a = /var/log/app.log
+b = -Hk
 ```
 
 ## Build

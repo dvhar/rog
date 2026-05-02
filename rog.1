@@ -1,134 +1,196 @@
-.TH ROG 1 "January 2022" "Version 1.0" "User Commands"
+.TH ROG 1 "May 2026" "Version 0.1.0" "User Commands"
 .SH NAME
-rog \- a versatile logging and monitoring tool
+rog \- a log reader and monitoring tool
 .SH SYNOPSIS
 .B rog
-[\fI-i\fR \fIHOST\fR]
-[\fI-f\fR \fIFIFO\_PATH\fR]
-[\fI-t\fR \fIFILE\_PATH\fR]
-[\fI-l\fR \fINUMBER\fR]
-[\fI-o\fR \fINUMBER\fR]
-[\fI-r\fR \fIREMOVE\_FIELDS\fR]
-[\fI-g\fR \fIPATTERN\fR]
-[\fI-w\fR \fIPATTERN\fR]
-[\fI-v\fR \fIPATTERN\fR]
-[\fI-m\fR \fITheme\fR]
-[\fI-C\fR \fINUMBER\fR]
-[\fI-A\fR \fINUMBER\fR]
-[\fI-B\fR \fINUMBER\fR]
-[\fI-u\fR]
-[\fI-c\fR]
-[\fI-n\fR]
-[\fI-s\fR]
-[\fI-b\fR]
-[\fI-h\fR]
-[FILES...]
+[\fI\fB\-I\fR\fP \fIHOST\fP]
+[\fB\-k\fP]
+[\fB\-d\fP \fIPORT\fP]
+[\fB\-f\fP \fIFIFO_PATH\fP]
+[\fB\-s\fP]
+[\fB\-g\fP \fIPATTERN\fP]
+[\fB\-w\fP \fIPATTERN\fP]
+[\fB\-v\fP \fIPATTERN\fP]
+[\fB\-i\fP]
+[\fB\-C\fP \fINUM\fP]
+[\fB\-A\fP \fINUM\fP]
+[\fB\-B\fP \fINUM\fP]
+[\fB\-r\fP \fIFIELDS\fP]
+[\fB\-m\fP \fITHEME|NUM\fP]
+[\fB\-c\fP]
+[\fB\-u\fP]
+[\fB\-o\fP \fINUM\fP]
+[\fB\-x\fP \fIPATTERN\fP]
+[\fB\-p\fP \fIPRESETS\fP]
+[\fB\-P\fP]
+[\fB\-H\fP]
+[\fB\-h\fP]
+[\fIfiles...\fP]
 .SH DESCRIPTION
-This tool allows users to monitor logs in real-time, with options for filtering and coloring the output for easy readability. It can read from files, a named pipe, or stdin. When reading from a pipe, it runs in server mode, logging data to an internal ringbuffer and serving it to rog clients which print it to console just like tailing a file.
+Halfway between \fBtail -f\fP and \fBlnav\fP. Rog monitors log files in real-time with
+options for filtering, syntax highlighting, and remote serving over TCP.
 
-The following options are available:
-
-.SH Server Mode Flags
-.TP 8
-\fB-f FIFO\_PATH\fP
-Creates and reads from a named pipe at the specified path. This option implies
-\fB-s\fP (server mode).
+It supports four operating modes:
 .TP
-\fB-t FILE_PATH\fP
-Similar to -f, but reads from a file. Not sure why you would use this flag but ok.
+\fBTail mode\fP (default)
+Monitor one or more files in real-time. Pass files as positional arguments.
 .TP
-\fB-s\fP
-Operates in server mode, which defaults to reading from standard input.
-
-.SH Client or Tail Mode Flags
-.TP 8
-\fB-i IP\fP
-Specifies the IP address of the server when operating in client mode. By default, it uses localhost
-(127.0.0.1).
+\fBFIFO mode\fP (\fB\-f\fP)
+Create and read from a named pipe at the specified path.
 .TP
-\fB-l NUM\fP
-Specifies the number of bytes to read from the server before exiting. By default, it reads
-indefinitely.
+\fBServer mode\fP (\fB\-s\fP)
+Read from any source and serve over TCP to connected clients.
 .TP
-\fB-o NUM\fP
-Limits the number of bytes per row in the output. By default, there is no limit.
+\fBClient mode\fP (\fB\-k\fP, \fB\-I\fP)
+Connect to a rog server and stream its output locally. Using \fB\-I\fP implies client mode.
+.SH OPTIONS
 .TP
-\fB-r F1,F2,F3...\fP
-Removes fields from the output. Matches log fields with format field=value or field="quoted value". Multiple fields can be specified separated by commas.
+\fB\-I\fP \fIHOST\fP, \fB\-\-ip\fP=\fIHOST\fP
+IP address of the server. Using this flag implies client mode (\fB\-k\fP).
 .TP
-\fB-g REGEX\fP
-Only shows lines that match the specified regular expression pattern.
+\fB\-k\fP, \fB\-\-client\fP
+Read from localhost in client mode (default port 19888).
 .TP
-\fB-w REGEX\fP
-Like \fB-g\fP, but only matches whole words.
+\fB\-d\fP \fIPORT\fP, \fB\-\-port\fP=\fIPORT\fP
+TCP port number (default: 19888).
 .TP
-\fB-v REGEX\fP
-Only shows lines that do not match the specified regular expression pattern.
+\fB\-f\fP \fIPATH\fP, \fB\-\-fifo\fP=\fIPATH\fP
+Create and read from a named pipe at the given path. The FIFO is
+automatically removed on exit.
 .TP
-\fB-m THEME\fP
-Changes the color scheme of the output. Available themes are: Visual Studio Dark+, 1337, DarkNeon, Dracula,
-Coldark-Dark, Monokai Extended, Sublime Snazzy, TwoDark, base16, gruvbox-dark, Nord, zenburn, ansi.
+\fB\-s\fP, \fB\-\-server\fP
+Server mode. Defaults to reading from stdin.
 .TP
-\fB-C NUM\fP
-Shows NUM lines of context around grep results. Note that these flags only include context from the same 'read' operation.
+\fB\-g\fP \fIPATTERN\fP, \fB\-\-grep\fP=\fIPATTERN\fP
+Only show lines matching the given regex pattern.
 .TP
-\fB-A NUM\fP
-Shows NUM lines of context after grep results.
+\fB\-w\fP \fIPATTERN\fP, \fB\-\-wgrep\fP=\fIPATTERN\fP
+Like \fB\-g\fP, but match whole words only.
 .TP
-\fB-B NUM\fP
-Shows NUM lines of context before grep results.
+\fB\-v\fP \fIPATTERN\fP, \fB\-\-vrep\fP=\fIPATTERN\fP
+Only show lines that do not match the given regex pattern.
 .TP
-\fB-b\fP
-Puts file names in a line break between chunks rather than on the side.
+\fB\-i\fP, \fB\-\-icase\fP
+Case-insensitive matching for \fB\-g\fP, \fB\-w\fP, and \fB\-v\fP.
 .TP
-\fB-u\fP
-Truncates bytes that don't fit the terminal.
+\fB\-C\fP \fINUM\fP, \fB\-\-context\fP=\fINUM\fP
+Show \fINUM\fP lines of context around grep matches.
 .TP
-\fB-c\fP
-Disables syntax highlighting.
+\fB\-A\fP \fINUM\fP, \fB\-\-after\fP=\fINUM\fP
+Show \fINUM\fP lines of context after grep matches.
 .TP
-\fB-n\fP
-Use the same colors for all files.
-
+\fB\-B\fP \fINUM\fP, \fB\-\-before\fP=\fINUM\fP
+Show \fINUM\fP lines of context before grep matches.
+.TP
+\fB\-r\fP \fIFIELDS\fP, \fB\-\-remove\fP=\fIFIELDS\fP
+Remove fields matching \fIfield=value\fP or \fIfield="quoted value"\fP from output.
+Multiple fields may be comma-separated.
+.TP
+\fB\-m\fP \fITHEME|NUM\fP, \fB\-\-theme\fP=\fITHEME|NUM\fP
+Set the syntax highlighting colorscheme. Accepts either a theme name
+(see below) or a numeric index (0-12). Use \fB\-h\fP to list available themes.
+.TP
+\fB\-c\fP, \fB\-\-nocolor\fP
+Disable syntax highlighting.
+.TP
+\fB\-u\fP, \fB\-\-truncate\fP
+Truncate lines that exceed terminal width.
+.TP
+\fB\-o\fP \fINUM\fP, \fB\-\-width\fP=\fINUM\fP
+Limit output to \fINUM\fP bytes per line.
+.TP
+\fB\-x\fP \fIPATTERN\fP, \fB\-\-exclude\fP=\fIPATTERN\fP
+Exclude files whose names match the given regex pattern.
+.TP
+\fB\-p\fP \fIPRESETS\fP, \fB\-\-presets\fP=\fIPRESETS\fP
+Load additional presets from \fI~/.config/rogrc\fP by key character.
+.TP
+\fB\-P\fP, \fB\-\-nopreset\fP
+Skip loading presets from \fI~/.config/rogrc\fP.
+.TP
+\fB\-H\fP, \fB\-\-parse\-headers\fP
+Parse tail-style file headers (\fI==> file <==\fP) in stdin or socket input.
+.TP
+\fB\-h\fP, \fB\-\-help\fP
+Print the help menu and list of available color themes.
+.SH COLOR THEMES
+The following 13 themes are available via \fB\-m\fP (by name or index number 0-12):
+.TP
+\fB0\fP Visual Studio Dark+ (default)
+.TP
+\fB1\fP 1337
+.TP
+\fB2\fP DarkNeon
+.TP
+\fB3\fP Dracula
+.TP
+\fB4\fP Coldark-Dark
+.TP
+\fB5\fP Monokai Extended
+.TP
+\fB6\fP Sublime Snazzy
+.TP
+\fB7\fP TwoDark
+.TP
+\fB8\fP base16
+.TP
+\fB9\fP gruvbox-dark
+.TP
+\fB10\fP Nord
+.TP
+\fB11\fP zenburn
+.TP
+\fB12\fP ansi
+.SH CONFIG
+Rog reads configuration from \fI~/.config/rogrc\fP. Each line has the format
+\fIkey = arguments\fP, where \fIkey\fP can be:
+.TP
+\fIdefault\fP
+Always applied.
+.TP
+\fIfilename\fP
+Applied when that file is passed as a positional argument.
+.TP
+\fIsingle letter\fP
+Invoked with \fB\-p\fP. Multiple presets can be combined with \fB\-p ab\fP to activate both \fIa\fP and \fIb\fP.
+.PP
+Example \fI~/.config/rogrc\fP:
+.IP
+\fBdefault = \-m Dracula \-u\fP
+.IP
+\fBapp.log = \-r date,uid\fP
+.IP
+\fBa = /var/log/app.log\fP
+.IP
+\fBb = \-Hk\fP
 .SH EXAMPLES
-Here are some examples of how to use the tool:
-
-Create a named pipe at /tmp/myfifo and read from it in server mode:
-.RS
-.PP
-\fBrog -f /tmp/myfifo\fP
-.RE
-
-Read the stdout of some_program in server mode:
-.RS
-.PP
-\fBsome_program | rog -s\fP
-.RE
-
-Connect to a rog server running on localhost and print whatever it is
-serving:
-.RS
-.PP
-\fBrog\fP
-.RE
-
-Connect to a rog server running on 10.0.0.4 and print whatever it is serving, removing
-the 'time' and 'date' fields if they are present:
-.RS
-.PP
-\fBrog -i 10.0.0.4 -r time,date\fP
-.RE
-
-Monitor some log files and only show lines that start with ERROR, with 3 lines of
-context:
-.RS
-.PP
-\fBrog *.log -g "^ERROR" -C3\fP
-.RE
-
+.TP
+Tail multiple log files:
+.B rog app.log error.log
+.TP
+Filter errors with context lines:
+.B rog *.log \-g "^ERROR" \-C3
+.TP
+Stream program output to remote clients:
+.B some_program | rog \-s
+.TP
+Serve a named pipe over TCP:
+.B rog \-s \-f /tmp/myfifo
+.TP
+Connect to a remote rog server:
+.B rog \-I 10.0.0.4
+.TP
+Create a named pipe and read from it:
+.B rog \-f /tmp/myfifo
+.TP
+Remove sensitive fields while monitoring:
+.B rog app.log \-r password,token
+.SH FILES
+.TP
+\fI~/.config/rogrc\fP
+Preset configuration file (created automatically on first run if missing).
 .SH SEE ALSO
-tail(1), grep(1), netcat(1)
-.SH AUTHOR
-Dave <jnk@davosaur.com>
-.SH BUGS
-Please report any bugs to the author.
+.BR tail (1),
+.BR grep (1),
+.BR lnav (1),
+.BR bat (1)
