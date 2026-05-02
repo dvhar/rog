@@ -125,6 +125,7 @@ pub enum Op {
     Jmp(usize),
     CtxJmp(usize),
     ReadNextFile(Receiver<Result<Event, Error>>),
+    ReadFifo(String),
     SliceWhole,
     SliceLine(usize),
     ReadStdin,
@@ -146,6 +147,7 @@ impl Clone for Op {
     fn clone(&self) -> Self {
         match self {
             Op::ReadNextFile(_) => unreachable!("ReadNextFile should never be cloned"),
+            Op::ReadFifo(p) => Op::ReadFifo(p.clone()),
             Op::Jmp(v) => Op::Jmp(*v),
             Op::CtxJmp(v) => Op::CtxJmp(*v),
             Op::SliceLine(v) => Op::SliceLine(*v),
@@ -190,6 +192,8 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
     let mut ctx_count: u64 = 0;
     let mut actx: usize = 0;
     let mut matched = false;
+    // fifo file handle: kept open across loop iterations; dropped on EOF to allow reconnect
+    let mut fifo_file: Option<File> = None;
     let color = match &mut opts.theme {
         Some(theme) => Some(RefCell::new(Colorizer::new(mem::take(theme)))),
         None => None,
@@ -209,6 +213,42 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                     Err(e) => eprintln!("read err:{}",e),
                 }
                 rb.clear();
+            },
+            Op::ReadFifo(ref path) => {
+                bx = 0;
+                // If we don't have an open handle (first open or previous EOF), open the fifo
+                if fifo_file.is_none() {
+                    match File::open(path) {
+                        Ok(f) => fifo_file = Some(f),
+                        Err(e) => {
+                            eprintln!("Error opening fifo {}:{}. Will retry...", path, e);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            continue;
+                        }
+                    }
+                }
+                // Read from the fifo
+                match fifo_file.as_mut().unwrap().read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        readbytes = n;
+                        rb.clear();
+                    },
+                    Ok(_) => {
+                        // EOF: all writers closed. Drop the handle so we re-open next iteration.
+                        fifo_file = None;
+                        continue;
+                    },
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        // Non-blocking: no data available yet. Sleep briefly and retry.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    },
+                    Err(e) => {
+                        eprintln!("fifo read error:{}; reopening...", e);
+                        fifo_file = None;
+                        continue;
+                    }
+                }
             },
             Op::ReadNextFile(ref rx) => {
                 bx = 0;
@@ -347,53 +387,14 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
     }
 }
 
-pub fn vm_tail(opts: &mut Opts) {
-    let not_files: Vec<&String> = opts.tailfiles.iter().filter(|path| match fs::metadata(path) {
-                                               Err(_) => true, _ => false, }).collect();
-    if !not_files.is_empty() {
-        die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
-    }
-    let prefixlen = if !opts.nameline { 0 } else {
-        opts.tailfiles[0].chars().enumerate().take_while(|c| {
-            opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
-    let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    if opts.nameline {
-        let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
-        if opts.termfit && opts.width > maxlen+1 {
-            opts.width -= maxlen+1
-        };
-        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
-    } else {
-        formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
-    }
-    let mut files = HashMap::<PathBuf,FileInfo>::new();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
-    for (i,path) in opts.tailfiles.iter().enumerate() {
-        match watcher.watch(path.as_ref(), RecursiveMode::NonRecursive) {
-            Ok(()) => {
-                let mut file = match File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => die!("Error opening file:{}", e),
-                };
-                file.seek(SeekFrom::End(0)).unwrap();
-                let pb = PathBuf::from(path);
-                let pb = fs::canonicalize(pb).unwrap();
-                println!("Watching path: {:?}", pb);
-                let _ = files.insert(pb, FileInfo::new(&formatted_names[i], path, file, i, &opts));
-            },
-            Err(e) => die!("Error adding watch:{}", e),
-        }
-    }
+/// Build the VM opcodes for grep/print logic, shared between vm_tail and vm_fifo.
+/// Takes the read-source op as a parameter so each caller can provide its own.
+fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
     let mut jumps = JumpPositions::new();
 
     let print_op = if opts.theme == None { Op::PrintPlain } else { Op::PrintColor };
     let mut ops = vec![
-        if opts.tailfiles.is_empty() {
-            Op::ReadStdin
-        } else {
-            Op::ReadNextFile(rx)
-        },
+        read_op,
         Op::SliceLine(0),
     ];
     let mut maybe_vre = if let Some(ref re) = opts.vgrep {
@@ -495,5 +496,84 @@ pub fn vm_tail(opts: &mut Opts) {
     ops.push(Op::Jmp(1));
 
     jumps.update_ops(&mut ops);
+    ops
+}
+
+pub fn vm_tail(opts: &mut Opts) {
+    let not_files: Vec<&String> = opts.tailfiles.iter().filter(|path| match fs::metadata(path) {
+                                               Err(_) => true, _ => false, }).collect();
+    if !not_files.is_empty() {
+        die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
+    }
+    let prefixlen = if !opts.nameline { 0 } else {
+        opts.tailfiles[0].chars().enumerate().take_while(|c| {
+            opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
+    let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
+    if opts.nameline {
+        let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
+        if opts.termfit && opts.width > maxlen+1 {
+            opts.width -= maxlen+1
+        };
+        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
+    } else {
+        formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
+    }
+    let mut files = HashMap::<PathBuf,FileInfo>::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+    for (i,path) in opts.tailfiles.iter().enumerate() {
+        match watcher.watch(path.as_ref(), RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                let mut file = match File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => die!("Error opening file:{}", e),
+                };
+                file.seek(SeekFrom::End(0)).unwrap();
+                let pb = PathBuf::from(path);
+                let pb = fs::canonicalize(pb).unwrap();
+                println!("Watching path: {:?}", pb);
+                let _ = files.insert(pb, FileInfo::new(&formatted_names[i], path, file, i, &opts));
+            },
+            Err(e) => die!("Error adding watch:{}", e),
+        }
+    }
+
+    let read_op = if opts.tailfiles.is_empty() {
+        Op::ReadStdin
+    } else {
+        Op::ReadNextFile(rx)
+    };
+    let ops = build_ops(read_op, opts);
     runvm(ops, files, opts);
+}
+
+/// Set up a named pipe (FIFO) at the given path and read from it using the VM.
+/// - Removes any existing file/fifo at the path before creating the new fifo.
+/// - Creates the fifo with mode 0o666.
+/// - Registers a ctrlc handler to remove the fifo on exit.
+/// - Reads from the fifo, re-opening on EOF (when writers disconnect).
+pub fn vm_fifo(path: String, opts: &mut Opts) {
+    // Remove existing file/fifo at the path if it exists
+    if fs::metadata(&path).is_ok() {
+        if let Err(e) = fs::remove_file(&path) {
+            die!("Error removing existing file at {}:{}", path, e);
+        }
+    }
+    // Create the fifo
+    if let Err(e) = unix_named_pipe::create(&path, Some(0o666)) {
+        die!("Error creating fifo at {}:{}", path, e);
+    }
+    println!("Created fifo: {}", path);
+
+    // Register ctrlc handler to clean up the fifo on exit
+    let cleanup_path = path.clone();
+    ctrlc::set_handler(move || {
+        if let Err(e) = fs::remove_file(cleanup_path.as_str()) {
+            eprintln!("failed to remove fifo:{}", e);
+        }
+        std::process::exit(0);
+    }).expect("Error setting Ctrl-C handler");
+
+    let ops = build_ops(Op::ReadFifo(path), opts);
+    runvm(ops, HashMap::new(), opts);
 }

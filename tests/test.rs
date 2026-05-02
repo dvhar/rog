@@ -1,5 +1,8 @@
 use std::io::Write;
+use std::os::unix::fs::FileTypeExt;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 const TEST_INPUT: &str = r#"2023-11-12 20:48:30.241 INFO [src/main.rs:13] Starting up
 2023-11-12 20:48:30.241 WARN [src/main.rs:14] Just a warning
@@ -218,4 +221,68 @@ fn test_width_truncate() {
     // "This is a very lon" is exactly 18 chars, truncated from longer line
     let expected = "This is a very lon\nShort line";
     run_test_stdin(&["-c", "-o18"], input, expected);
+}
+
+/// FIFO: create a named pipe, write data to it, verify output, and confirm cleanup.
+/// This tests vm_fifo end-to-end: fifo creation, reading, and ctrlc-triggered deletion.
+#[test]
+fn test_fifo_create_read_cleanup() {
+    let fifo_path = "/tmp/rog_test_fifo_".to_string() + &std::process::id().to_string();
+
+    // Ensure any stale file is gone
+    let _ = std::fs::remove_file(&fifo_path);
+    assert!(!std::path::Path::new(&fifo_path).exists());
+
+    let child = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-f", &fifo_path, "-c"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Give rog time to create the fifo
+    thread::sleep(Duration::from_millis(500));
+
+    // Verify the fifo was created
+    assert!(
+        std::path::Path::new(&fifo_path).exists(),
+        "fifo should exist after rog starts"
+    );
+    let metadata = std::fs::metadata(&fifo_path).unwrap();
+    assert!(
+        metadata.file_type().is_fifo(),
+        "path should be a named pipe, not a regular file"
+    );
+
+    // Write data to the fifo and close the writer (triggers EOF)
+    let test_data = "hello from fifo\nsecond line\n";
+    let mut fifo_writer = std::fs::File::create(&fifo_path).unwrap();
+    fifo_writer.write_all(test_data.as_bytes()).unwrap();
+    drop(fifo_writer); // closing writer causes EOF on the reader side
+
+    // Give rog time to read the data
+    thread::sleep(Duration::from_millis(500));
+
+    // Send SIGINT to trigger the ctrlc handler, which removes the fifo
+    let kill_result = Command::new("kill")
+        .args(&["-INT", &child.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(kill_result.status.success(), "kill -INT failed");
+
+    // Wait for rog to exit
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "rog exited with error: {:?}", String::from_utf8_lossy(&output.stderr));
+
+    // Verify output contains the data we wrote
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("hello from fifo"), "output missing 'hello from fifo': {}", stdout);
+    assert!(stdout.contains("second line"), "output missing 'second line': {}", stdout);
+
+    // Verify the fifo was cleaned up
+    assert!(
+        !std::path::Path::new(&fifo_path).exists(),
+        "fifo should be removed after rog exits"
+    );
 }
