@@ -286,3 +286,70 @@ fn test_fifo_create_read_cleanup() {
         "fifo should be removed after rog exits"
     );
 }
+
+/// File tailing: create 2 files, start rog watching them, append data, verify output.
+/// This tests vm_tail end-to-end: file watching, reading new content, and multi-file handling.
+#[test]
+fn test_tail_two_files() {
+    let id = std::process::id();
+    let file1 = format!("/tmp/rog_test_file1_{}", id);
+    let file2 = format!("/tmp/rog_test_file2_{}", id);
+
+    // Ensure stale files are gone
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+
+    // Create empty files so rog can open and watch them
+    std::fs::write(&file1, "").unwrap();
+    std::fs::write(&file2, "").unwrap();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-c", &file1, &file2])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Give rog time to set up file watches
+    thread::sleep(Duration::from_millis(500));
+
+    // Append data to file1
+    let data1 = "line from file1\n";
+    let mut f1 = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file1)
+        .unwrap();
+    f1.write_all(data1.as_bytes()).unwrap();
+    drop(f1);
+
+    // Append data to file2
+    let data2 = "line from file2\n";
+    let mut f2 = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file2)
+        .unwrap();
+    f2.write_all(data2.as_bytes()).unwrap();
+    drop(f2);
+
+    // Give rog time to detect modifications and read the data
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill the child (rx.recv() blocks, preventing clean exit on SIGINT)
+    let kill_result = Command::new("kill")
+        .args(&["-9", &child.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(kill_result.status.success(), "kill -9 failed");
+
+    let output = child.wait_with_output().unwrap();
+
+    // Verify output contains data from both files
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("line from file1"), "output missing 'line from file1': {}", stdout);
+    assert!(stdout.contains("line from file2"), "output missing 'line from file2': {}", stdout);
+
+    // Clean up temp files
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+}
