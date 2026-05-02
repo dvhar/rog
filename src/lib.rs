@@ -533,9 +533,9 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
                 } else {
                     if let Some(ref rf) = rem_fields { ops.push(Op::Remove(rf.clone())); }
                     if opts.width > 0 { ops.push(Op::Truncate); }
+                    if let Some(h) = &header_op { ops.push(h.clone()); }
+                    ops.push(print_op.clone());
                 }
-                if let Some(h) = &header_op { ops.push(h.clone()); }
-                ops.push(print_op.clone());
                 ops.push(Op::Jmp(1));
                 if opts.actx > 0 {
                     let actx_target = ops.len();
