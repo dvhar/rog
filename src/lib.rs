@@ -135,6 +135,7 @@ pub enum Op {
     SetGrepPos,
     ActxJmp(i64),
     ActxReset(Regex),
+    Remove(Regex),
     Truncate,
     ServerWrite,
     ReadSocket(TcpStream),
@@ -161,6 +162,7 @@ impl Clone for Op {
             Op::SetGrepPos => Op::SetGrepPos,
             Op::ActxJmp(v) => Op::ActxJmp(*v),
             Op::ActxReset(re) => Op::ActxReset(re.clone()),
+            Op::Remove(re) => Op::Remove(re.clone()),
             Op::Truncate => Op::Truncate,
             Op::ServerWrite => Op::ServerWrite,
             Op::ReadSocket(_) => unreachable!("ReadSocket should never be cloned"),
@@ -408,6 +410,26 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     rb.enqueue((ax, bx));
                 }
             },
+            Op::Remove(ref re) => {
+                let line = unsafe { std::str::from_utf8_unchecked(&buf[ax..pbx]) };
+                let mut result = String::new();
+                let mut start = 0;
+                let mut found = false;
+                for m in re.find_iter(line) {
+                    if start <= m.start() {
+                        result.push_str(&line[start..m.start()]);
+                        start = m.end();
+                        found = true;
+                    }
+                }
+                if !found {
+                    // no fields to remove, leave buffer as-is
+                } else {
+                    result.push_str(&line[start..]);
+                    pbx = ax + result.len();
+                    buf[ax..pbx].copy_from_slice(result.as_bytes());
+                }
+            },
             Op::Truncate => {
                 if opts.width > 0 {
                     let has_nl = bx > ax && buf[bx-1] == b'\n';
@@ -453,6 +475,12 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
     } else {
         None
     };
+    let rem_fields = if !opts.fields.is_empty() {
+        Some(Regex::new(&format!(r#"\b({})=("[^"]*"|[^\s]*) ?"#, opts.fields.replace(",","|")))
+            .expect("Could not parse field name into regex"))
+    } else {
+        None
+    };
     let mut vgreps_jump: Option<i64> = None;
     if opts.bctx == 0 && opts.actx == 0 && !matches!(maybe_vre, None) {
         let vgreps = jumps.new_placeholder();
@@ -493,6 +521,7 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
                         ops.push(Op::Match(vre.clone()));
                         ops.push(Op::MatchJmp(vjump));
                     }
+                    if let Some(ref rf) = rem_fields { ops.push(Op::Remove(rf.clone())); }
                     if opts.width > 0 { ops.push(Op::Truncate); }
                     if let Some(h) = &header_op { ops.push(h.clone()); }
                     ops.push(print_op.clone());
@@ -501,9 +530,9 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
                     }
                     jumps.set_place(bjump, ops.len());
                     ops.push(Op::CtxJmp(ctx_start));
-                } else if opts.width > 0 {
-                    ops.push(Op::Truncate);
                 } else {
+                    if let Some(ref rf) = rem_fields { ops.push(Op::Remove(rf.clone())); }
+                    if opts.width > 0 { ops.push(Op::Truncate); }
                 }
                 if let Some(h) = &header_op { ops.push(h.clone()); }
                 ops.push(print_op.clone());
@@ -517,6 +546,7 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
                         ops.push(Op::MatchJmp(vjump));
                     }
                     ops.push(Op::ActxReset(r.clone()));
+                    if let Some(ref rf) = rem_fields { ops.push(Op::Remove(rf.clone())); }
                     if opts.width > 0 { ops.push(Op::Truncate); }
                     if let Some(h) = &header_op { ops.push(h.clone()); }
                     ops.push(print_op.clone());
@@ -529,8 +559,9 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
             },
             Err(e) => die!("Regex error for {}:{}", search, e),
         }
-    } else if opts.width > 0 {
-        ops.push(Op::Truncate);
+    } else {
+        if let Some(ref rf) = rem_fields { ops.push(Op::Remove(rf.clone())); }
+        if opts.width > 0 { ops.push(Op::Truncate); }
     }
     if let Some(h) = &header_op { ops.push(h.clone()); }
     ops.push(print_op.clone());
