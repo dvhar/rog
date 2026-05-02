@@ -165,6 +165,7 @@ pub struct Opts {
     pub server_mode: bool,
     pub tailfiles: Vec<String>,
     pub tcp_clients: Option<Arc<Mutex<HashMap<i64, TcpStream>>>>,
+    pub parse_headers: bool,
 
 }
 impl Opts {
@@ -191,6 +192,7 @@ impl Opts {
                               other.exclude);
         self.tailfiles = self.tailfiles.iter().chain(other.tailfiles.iter())
             .collect::<BTreeSet<&String>>().iter().map(|s|s.to_string()).collect();
+        self.parse_headers |= other.parse_headers;
     }
 
     pub fn new() -> Self {
@@ -220,12 +222,13 @@ impl Opts {
         opts.optflag("c", "nocolor", "No syntax highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("h", "help", "print this help menu");
+        opts.optflag("H", "parse-headers", "parse tail file headers (==> file <==) in stdin/socket input");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
         };
         if matches.opt_present("h") {
-            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nOtherwise read from rog server and print.");
+            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nOtherwise read from rog server and print.");
         }
         let theme = match (matches.opt_present("c"), matches.opt_present("m")) {
             (true,true) => die!("Cannot use 'c' with 'm'"),
@@ -258,6 +261,7 @@ impl Opts {
             tailfiles: mem::take(&mut matches.free),
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
             tcp_clients: None,
+            parse_headers: matches.opt_present("H"),
 
         };
         if recurse && !matches.opt_present("P") {

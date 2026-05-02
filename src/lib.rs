@@ -139,6 +139,7 @@ pub enum Op {
     Truncate,
     ServerWrite,
     ReadSocket(TcpStream),
+    ParseHeader(usize),
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -166,6 +167,7 @@ impl Clone for Op {
             Op::Truncate => Op::Truncate,
             Op::ServerWrite => Op::ServerWrite,
             Op::ReadSocket(_) => unreachable!("ReadSocket should never be cloned"),
+            Op::ParseHeader(v) => Op::ParseHeader(*v),
         }
     }
 }
@@ -190,6 +192,8 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     let mut last_grepped_prev: i64 = 0;
     let mut line_num: i64 = 0;
     let mut ctx_count: u64 = 0;
+    let mut header_file_map: HashMap<String, usize> = HashMap::new();
+    let mut header_file_counter: usize = 0;
     let mut actx: usize = 0;
     let mut matched = false;
     // fifo file handle: kept open across loop iterations; dropped on EOF to allow reconnect
@@ -359,7 +363,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
             Op::PrintNameHeader => {
                 if fidx != prevfidx {
                     prevfidx = fidx;
-                    let header = format!("\n===> {} <===\n", current_filename);
+                    let header = format!("\n==> {} <==\n", current_filename);
                     if opts.server_mode {
                         if let Some(ref clients) = opts.tcp_clients {
                             let mut cm = clients.lock().unwrap();
@@ -445,6 +449,33 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     }
                 }
             },
+            Op::ParseHeader(ip) => {
+                let line = unsafe { std::str::from_utf8_unchecked(&buf[ax..pbx]) };
+                let trimmed = line.trim();
+                if trimmed.len() > 9 && trimmed.starts_with("==>") && trimmed.ends_with("<==") {
+                    let inner = trimmed[3..trimmed.len()-3].trim();
+                    if !inner.is_empty() {
+                        // Print the header line, colorized if tty and not -c
+                        if io::stdout().is_terminal() && opts.theme.is_some() {
+                            io::stdout().write_all(Red.bold().paint(trimmed).to_string().as_bytes()).unwrap();
+                            io::stdout().write_all(b"\n").unwrap();
+                        } else {
+                            io::stdout().write_all(line.as_bytes()).unwrap();
+                        }
+                        // Track the file name and assign an index
+                        if let Some(&idx) = header_file_map.get(inner) {
+                            fidx = idx;
+                        } else {
+                            fidx = header_file_counter;
+                            header_file_map.insert(inner.to_string(), header_file_counter);
+                            header_file_counter += 1;
+                        }
+                        prevfidx = 9999; // force header to be shown if PrintNameHeader is present
+                        i = ip;
+                        continue;
+                    }
+                }
+            },
         }
         i += 1;
     }
@@ -467,6 +498,9 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
         read_op,
         Op::SliceLine(0),
     ];
+    if opts.parse_headers {
+        ops.push(Op::ParseHeader(1));
+    }
     let mut maybe_vre = if let Some(ref re) = opts.vgrep {
         match RegexBuilder::new(re.as_str()).case_insensitive(opts.icase).build() {
             Ok(r) => Some(r),

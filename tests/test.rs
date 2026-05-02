@@ -754,7 +754,7 @@ fn test_remove_trailing_field() {
     run_test_stdin(&["-c", "-r", "key"], input, expected);
 }
 
-/// Headers: when tailing multiple files, a header line `===> path <===` is printed
+/// Headers: when tailing multiple files, a header line `==> path <==` is printed
 /// when switching from one file to another.
 #[test]
 fn test_tail_multiple_files_shows_headers() {
@@ -806,13 +806,13 @@ fn test_tail_multiple_files_shows_headers() {
 
     // Header should appear in output when tailing multiple files
     assert!(
-        stdout.contains("===>"),
-        "header marker '===>' should appear when tailing multiple files: {}",
+        stdout.contains("==>"),
+        "header marker '==>' should appear when tailing multiple files: {}",
         stdout
     );
     assert!(
-        stdout.contains("<==="),
-        "header marker '<===' should appear when tailing multiple files: {}",
+        stdout.contains("<=="),
+        "header marker '<==' should appear when tailing multiple files: {}",
         stdout
     );
 
@@ -863,13 +863,13 @@ fn test_tail_single_file_no_headers() {
 
     // No headers should appear for a single file
     assert!(
-        !stdout.contains("===>"),
-        "header marker '===>' should NOT appear when tailing a single file: {}",
+        !stdout.contains("==>"),
+        "header marker '==>' should NOT appear when tailing a single file: {}",
         stdout
     );
     assert!(
-        !stdout.contains("<==="),
-        "header marker '<===' should NOT appear when tailing a single file: {}",
+        !stdout.contains("<=="),
+        "header marker '<==' should NOT appear when tailing a single file: {}",
         stdout
     );
 
@@ -949,12 +949,12 @@ fn test_server_multi_files_headers_to_client() {
 
     // Client should receive headers (server sends them to clients)
     assert!(
-        client_stdout.contains("===>"),
+        client_stdout.contains("==>"),
         "client should receive header markers when server tails multiple files: {}",
         client_stdout
     );
     assert!(
-        client_stdout.contains("<==="),
+        client_stdout.contains("<=="),
         "client should receive header markers when server tails multiple files: {}",
         client_stdout
     );
@@ -1029,7 +1029,7 @@ fn test_client_no_headers_single_file_server() {
 
     // Client should NOT have any headers (server is single-source, client never generates headers)
     assert!(
-        !client_stdout.contains("===>"),
+        !client_stdout.contains("==>"),
         "client should NOT show headers when server has single source: {}",
         client_stdout
     );
@@ -1053,4 +1053,100 @@ key=val line three"#;
 MATCH here
 line three"#;
     run_test_stdin(&["-c", "-g", "MATCH", "-B1", "-A1", "-r", "key"], input, expected);
+}
+
+/// Parse file headers from stdin: -H flag parses ==>/<== markers and assigns
+/// different colors to each file. Without -c, output should contain ANSI codes.
+#[test]
+fn test_parse_headers_from_stdin() {
+    let input = r#"==> /var/log/syslog <==
+Jan  1 normal log line
+==> /var/log/auth.log <==
+Jan  2 auth event here
+==> /var/log/syslog <==
+Jan  3 another syslog line"#;
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rog"));
+    cmd.args(&["-H"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Headers should be present in output
+    assert!(
+        stdout.contains("==> /var/log/syslog <=="),
+        "missing syslog header: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("==> /var/log/auth.log <=="),
+        "missing auth.log header: {}",
+        stdout
+    );
+
+    // Log lines should be present
+    assert!(
+        stdout.contains("normal log line"),
+        "missing syslog log line: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("auth event here"),
+        "missing auth.log log line: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("another syslog line"),
+        "missing second syslog line: {}",
+        stdout
+    );
+
+    // Without -c flag, output should contain ANSI color codes for syntax highlighting
+    assert!(
+        stdout.contains("\x1b["),
+        "output should contain ANSI escape codes (no -c flag): {}",
+        stdout
+    );
+
+    // The two files should get different color codes (different ANSI sequences)
+    let syslog_line = stdout
+        .lines()
+        .find(|l| l.contains("normal log line"))
+        .expect("syslog line not found");
+    let auth_line = stdout
+        .lines()
+        .find(|l| l.contains("auth event here"))
+        .expect("auth line not found");
+
+    // Extract ANSI codes from each line
+    let syslog_ansi: Vec<&str> = syslog_line.matches("\x1b[").collect();
+    let auth_ansi: Vec<&str> = auth_line.matches("\x1b[").collect();
+
+    // Both lines should have ANSI codes
+    assert!(!syslog_ansi.is_empty(), "syslog line should have ANSI codes");
+    assert!(!auth_ansi.is_empty(), "auth line should have ANSI codes");
+
+    // The ANSI codes should differ between files (different colors)
+    let syslog_codes = syslog_line
+        .split('\x1b')
+        .skip(1)
+        .next()
+        .unwrap_or("");
+    let auth_codes = auth_line
+        .split('\x1b')
+        .skip(1)
+        .next()
+        .unwrap_or("");
+    assert!(
+        syslog_codes != auth_codes,
+        "syslog and auth lines should have different ANSI color codes\nsyslog: {}\nauth: {}",
+        syslog_codes,
+        auth_codes
+    );
 }
