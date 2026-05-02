@@ -2,6 +2,7 @@ use {
     std::collections::HashMap,
     std::cell::RefCell,
     std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
+    ansi_term::Colour::Red,
     std::mem,
     std::sync::mpsc::Receiver,
     std::sync::{Arc, Mutex},
@@ -9,7 +10,7 @@ use {
     std::{fs, fs::File},
     std::path::PathBuf,
     regex::{Regex, RegexBuilder},
-    ansi_term::{Colour, Colour::*},
+
     notify::{Event, Error, RecommendedWatcher, RecursiveMode, Watcher, event::{ModifyKind, DataChange}, EventKind::Modify},
     ringbuffer,
     ringbuffer::RingBuffer,
@@ -86,24 +87,15 @@ impl JumpPositions {
 
 pub struct FileInfo {
     pub file: File,
-    pub name: String,
     pub rawname: String,
     pub lastsize: u64,
     pub idx: usize,
 }
 impl FileInfo {
-    pub fn new(name: &String, origpath: &String, f: File, idx: usize, opts: &Opts) -> Self {
-        static COLORS: [Colour;8] = [Cyan, Red, Purple, Yellow, Green, Red, Purple, Green];
+    pub fn new(origpath: &String, f: File, idx: usize) -> Self {
         let mut fi = FileInfo {
             file: f,
             rawname: origpath.clone(),
-            name: if io::stdout().is_terminal() {
-                if !opts.nameline && opts.theme != None {
-                    Red.bold().paint(name).to_string()
-                } else {
-                    COLORS[idx % COLORS.len()].bold().on(Colour::RGB(20,15,10)).paint(name).to_string()
-                }
-            } else { name.to_string() },
             lastsize: 0,
             idx,
         };
@@ -187,8 +179,8 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     let mut readbytes = 0;
     let mut buf = [0; BUFSZ];
     let mut paths: Vec<_> = Vec::new();
-    let mut current_filename = String::new();
     let mut files = tailfiles;
+    let mut current_filename = String::new();
     let mut prevfidx = 9999;
     let mut fidx = 0;
     let mut rb = ringbuffer::AllocRingBuffer::new(opts.bctx+1);
@@ -270,8 +262,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
                 if let Some(path) = paths.pop() {
                     if let Some(fi) = files.get_mut(&path) {
-                        current_filename = fi.name.clone();
-                        prevfidx = fidx;
+                        current_filename = fi.rawname.clone();
                         fidx = fi.idx;
                         fi.updatesize();
                         let mut n = fi.file.read(&mut buf).unwrap();
@@ -365,7 +356,21 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
             },
             Op::PrintNameHeader => {
                 if fidx != prevfidx {
-                    println!("\n  {}", current_filename); 
+                    prevfidx = fidx;
+                    let header = format!("\n===> {} <===\n", current_filename);
+                    if opts.server_mode {
+                        if let Some(ref clients) = opts.tcp_clients {
+                            let mut cm = clients.lock().unwrap();
+                            let bytes = header.into_bytes();
+                            for (_, stream) in cm.iter_mut() {
+                                let _ = stream.write_all(&bytes);
+                            }
+                        }
+                    } else if io::stdout().is_terminal() && opts.theme.is_some() {
+                        io::stdout().write_all(Red.bold().paint(&header).to_string().as_bytes()).unwrap();
+                    } else {
+                        io::stdout().write_all(header.as_bytes()).unwrap();
+                    }
                 }
             },
             Op::PrintPlain => {
@@ -425,7 +430,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
 
 /// Build the VM opcodes for grep/print logic, shared between vm_tail and vm_fifo.
 /// Takes the read-source op as a parameter so each caller can provide its own.
-fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
+fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
     let mut jumps = JumpPositions::new();
 
     let print_op = if opts.server_mode {
@@ -435,6 +440,7 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
     } else {
         Op::PrintColor
     };
+    let header_op = if print_header { Some(Op::PrintNameHeader) } else { None };
     let mut ops = vec![
         read_op,
         Op::SliceLine(0),
@@ -488,6 +494,7 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
                         ops.push(Op::MatchJmp(vjump));
                     }
                     if opts.width > 0 { ops.push(Op::Truncate); }
+                    if let Some(h) = &header_op { ops.push(h.clone()); }
                     ops.push(print_op.clone());
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
@@ -496,10 +503,10 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
                     ops.push(Op::CtxJmp(ctx_start));
                 } else if opts.width > 0 {
                     ops.push(Op::Truncate);
-                    ops.push(print_op.clone());
                 } else {
-                    ops.push(print_op.clone());
                 }
+                if let Some(h) = &header_op { ops.push(h.clone()); }
+                ops.push(print_op.clone());
                 ops.push(Op::Jmp(1));
                 if opts.actx > 0 {
                     let actx_target = ops.len();
@@ -511,6 +518,7 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
                     }
                     ops.push(Op::ActxReset(r.clone()));
                     if opts.width > 0 { ops.push(Op::Truncate); }
+                    if let Some(h) = &header_op { ops.push(h.clone()); }
                     ops.push(print_op.clone());
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
@@ -524,6 +532,7 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
     } else if opts.width > 0 {
         ops.push(Op::Truncate);
     }
+    if let Some(h) = &header_op { ops.push(h.clone()); }
     ops.push(print_op.clone());
     if let Some(sp) = skip_print {
         jumps.set_place(sp, ops.len());
@@ -543,19 +552,6 @@ pub fn vm_tail(opts: &mut Opts) {
     if !not_files.is_empty() {
         die!("Args are not files:{}", not_files.iter().fold(String::new(),|acc,x|acc+" "+x));
     }
-    let prefixlen = if !opts.nameline { 0 } else {
-        opts.tailfiles[0].chars().enumerate().take_while(|c| {
-            opts.tailfiles.iter().all(|s| match s.chars().nth(c.0) { Some(k)=>k==c.1, None=>false})}).count()};
-    let mut formatted_names: Vec<String> = opts.tailfiles.iter().map(|s| s.chars().skip(prefixlen).collect()).collect();
-    if opts.nameline {
-        let maxlen = formatted_names.iter().map(|s|s.len()).fold(0,|max,len|max.max(len));
-        if opts.termfit && opts.width > maxlen+1 {
-            opts.width -= maxlen+1
-        };
-        formatted_names = formatted_names.iter().map(|s|format!("{:<width$}:", s, width=maxlen)).collect();
-    } else {
-        formatted_names = formatted_names.iter().map(|s|format!("===> {} <===", s)).collect();
-    }
     let mut files = HashMap::<PathBuf,FileInfo>::new();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
@@ -570,7 +566,7 @@ pub fn vm_tail(opts: &mut Opts) {
                 let pb = PathBuf::from(path);
                 let pb = fs::canonicalize(pb).unwrap();
                 println!("Watching path: {:?}", pb);
-                let _ = files.insert(pb, FileInfo::new(&formatted_names[i], path, file, i, &opts));
+                let _ = files.insert(pb, FileInfo::new(path, file, i));
             },
             Err(e) => die!("Error adding watch:{}", e),
         }
@@ -581,7 +577,7 @@ pub fn vm_tail(opts: &mut Opts) {
     } else {
         Op::ReadNextFile(rx)
     };
-    let ops = build_ops(read_op, opts);
+    let ops = build_ops(read_op, opts, opts.tailfiles.len() > 1);
     runvm(ops, files, opts);
 }
 
@@ -612,7 +608,7 @@ pub fn vm_fifo(path: String, opts: &mut Opts) {
         std::process::exit(0);
     }).expect("Error setting Ctrl-C handler");
 
-    let ops = build_ops(Op::ReadFifo(path), opts);
+    let ops = build_ops(Op::ReadFifo(path), opts, false);
     runvm(ops, HashMap::new(), opts);
 }
 
@@ -645,6 +641,6 @@ pub fn client_mode(opts: &mut Opts) {
         Ok(s) => s,
         Err(e) => die!("Could not connect to {}:{}, Error: {}", opts.host, opts.port, e),
     };
-    let ops = build_ops(Op::ReadSocket(stream), opts);
+    let ops = build_ops(Op::ReadSocket(stream), opts, false);
     runvm(ops, HashMap::new(), opts);
 }
