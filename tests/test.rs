@@ -627,3 +627,141 @@ fn test_tail_two_files() {
     let _ = std::fs::remove_file(&file1);
     let _ = std::fs::remove_file(&file2);
 }
+
+/// Remove a single simple field (key=value).
+#[test]
+fn test_remove_single_field() {
+    let input = r#"host=127.0.0.1 Starting up
+host=127.0.0.1 Just a warning"#;
+    let expected = r#"Starting up
+Just a warning"#;
+    run_test_stdin(&["-c", "-r", "host"], input, expected);
+}
+
+/// Remove multiple fields in one pass.
+#[test]
+fn test_remove_multiple_fields() {
+    let input = r#"host=127.0.0.1 level=warn Just a warning
+host=127.0.0.1 level=error An error occurred"#;
+    let expected = r#"Just a warning
+An error occurred"#;
+    run_test_stdin(&["-c", "-r", "host,level"], input, expected);
+}
+
+/// Remove a field with a quoted value containing spaces.
+#[test]
+fn test_remove_quoted_field() {
+    let input = r#"msg="hello world" some extra text"#;
+    let expected = "some extra text";
+    run_test_stdin(&["-c", "-r", "msg"], input, expected);
+}
+
+/// Remove mixed: one simple field and one quoted field.
+#[test]
+fn test_remove_mixed_fields() {
+    let input = r#"status=ok msg="value with spaces" trailing text"#;
+    let expected = "trailing text";
+    run_test_stdin(&["-c", "-r", "status,msg"], input, expected);
+}
+
+/// When the field to remove is not present, the line should pass through unchanged.
+#[test]
+fn test_remove_no_match() {
+    let input = r#"hello world
+another line
+still another"#;
+    let expected = input;
+    run_test_stdin(&["-c", "-r", "nonexistent"], input, expected);
+}
+
+/// Remove field and truncate the resulting line.
+#[test]
+fn test_remove_and_truncate() {
+    let input = "key=val this is a very long line that should be truncated properly\n";
+    let expected = "this is a very long line tha\n";
+    run_test_stdin(&["-c", "-r", "key", "-o", "28"], input, expected);
+}
+
+/// Remove field on a line that gets truncated to the width limit.
+#[test]
+fn test_remove_and_truncate_short() {
+    let input = "id=12345 hello\n";
+    let expected = "he\n";
+    run_test_stdin(&["-c", "-r", "id", "-o", "2"], input, expected);
+}
+
+/// Truncate alone (no remove) still works.
+#[test]
+fn test_truncate_alone() {
+    let input = "hello world this is long\n";
+    let expected = "he\n";
+    run_test_stdin(&["-c", "-o", "2"], input, expected);
+}
+
+/// Remove with grep: only matching lines are printed and fields are removed.
+#[test]
+fn test_remove_with_grep() {
+    let input = r#"key=val this line matches
+other line no match
+key=val another matches"#;
+    let expected = r#"this line matches
+another matches"#;
+    run_test_stdin(&["-c", "-g", "matches", "-r", "key"], input, expected);
+}
+
+/// Remove with vgrep: filter out lines, then remove fields from remaining.
+#[test]
+fn test_remove_with_vgrep() {
+    let input = r#"key=val keep this
+key=val skip this please
+keep this too no field"#;
+    let expected = r#"keep this
+keep this too no field"#;
+    run_test_stdin(&["-c", "-v", "please", "-r", "key"], input, expected);
+}
+
+/// Remove field that appears multiple times on the same line.
+#[test]
+fn test_remove_field_repeated() {
+    let input = r#"tag=a tag=b tag=c end of line"#;
+    let expected = "end of line";
+    run_test_stdin(&["-c", "-r", "tag"], input, expected);
+}
+
+/// Remove at start of line: field is the only content.
+#[test]
+fn test_remove_only_content() {
+    let input = r#"key=val
+other line
+key=val"#;
+    let expected = "\nother line\n";
+    run_test_stdin(&["-c", "-r", "key"], input, expected);
+}
+
+/// Remove with back-to-back fields (no space between them).
+#[test]
+fn test_remove_adjacent_fields() {
+    let input = r#"a=1b=2 after"#;
+    let expected = "after";
+    run_test_stdin(&["-c", "-r", "a,b"], input, expected);
+}
+
+/// Remove field at end of line (trailing space after value is also removed).
+#[test]
+fn test_remove_trailing_field() {
+    let input = r#"start of line key=val"#;
+    let expected = "start of line";
+    run_test_stdin(&["-c", "-r", "key"], input, expected);
+}
+
+/// Remove with grep and context: fields removed from all printed lines.
+#[test]
+fn test_remove_with_grep_context() {
+    let input = r#"key=val line one
+key=val MATCH here
+key=val line three"#;
+    let expected = r#"line one
+MATCH here
+line three"#;
+    run_test_stdin(&["-c", "-g", "MATCH", "-B1", "-A1", "-r", "key"], input, expected);
+}
