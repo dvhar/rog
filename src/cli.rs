@@ -211,7 +211,7 @@ impl Opts {
         opts.optopt("w", "wgrep", "only show lines that match a pattern, with word boundary", "REGEX");
         opts.optopt("v", "vrep", "only show lines that dont' match a pattern", "REGEX");
         opts.optopt("x", "exclude", "ignore file params that match a pattern", "REGEX");
-        opts.optopt("m", "theme", "colorscheme", "THEME");
+        opts.optopt("m", "theme", "colorscheme (name or number)", "NAME|NUM");
         opts.optopt("C", "context", "Lines of context aroung grep results", "NUM");
         opts.optopt("A", "after", "Lines of context after grep results", "NUM");
         opts.optopt("B", "before", "Lines of context before grep results", "NUM");
@@ -228,13 +228,28 @@ impl Opts {
             Err(e) => die!("bad args:{}", e),
         };
         if matches.opt_present("h") {
-            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nOtherwise read from rog server and print.");
+            let theme_list: String = THEMES.iter().enumerate()
+                .map(|(i, t)| format!("  {:2}: {}", i, t))
+                .collect::<Vec<_>>().join("\n");
+            die!("{}\n{}\n\nColor themes:\n{}", opts.usage(&args[0]),
+                "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nReads from stdin by default.",
+                theme_list);
         }
-        let theme = match (matches.opt_present("c"), matches.opt_present("m")) {
-            (true,true) => die!("Cannot use 'c' with 'm'"),
-            (true,false) => None,
-            (false,true) => matches.opt_str("m"),
-            (false,false) =>  Some("Visual Studio Dark+".to_string()),
+        let theme = match (matches.opt_present("c"), matches.opt_str("m")) {
+            (true,Some(_)) => die!("Cannot use 'c' with 'm'"),
+            (true,_) => None,
+            (false, Some(arg)) => {
+                if let Ok(idx) = arg.parse::<usize>() {
+                    if idx < THEMES.len() {
+                        Some(THEMES[idx].to_string())
+                    } else {
+                        die!("Theme index {} out of range (0-{}). Use -h to see available themes.", idx, THEMES.len() - 1);
+                    }
+                } else {
+                    Some(arg)
+                }
+            }
+            (false, None) => Some("Visual Studio Dark+".to_string()),
         };
         let c = matches.opt_str("C").unwrap_or("0".to_string());
         let width = if matches.opt_present("u") {
@@ -256,7 +271,7 @@ impl Opts {
             fields: matches.opt_str("r").unwrap_or(Default::default()),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
-            client_mode: matches.opt_present("k"),
+            client_mode: matches.opt_present("k") || matches.opt_present("I"),
             server_mode: matches.opt_present("s"),
             tailfiles: mem::take(&mut matches.free),
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
