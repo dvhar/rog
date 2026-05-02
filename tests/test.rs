@@ -210,3 +210,12 @@ fn test_grep_context() {
 2023-11-12 20:48:30.269 ERROR [src/main.rs:34] Post-shutdown error"#;
     run_test_stdin(&["-c", "-g", "ERROR", "-C1"], TEST_INPUT, expected);
 }
+
+/// -o (width): truncates lines to specified byte width, not cutting mid-unicode
+#[test]
+fn test_width_truncate() {
+    let input = "This is a very long line that exceeds the limit\nShort line\n";
+    // "This is a very lon" is exactly 18 chars, truncated from longer line
+    let expected = "This is a very lon\nShort line";
+    run_test_stdin(&["-c", "-o18"], input, expected);
+}

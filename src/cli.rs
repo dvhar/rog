@@ -238,8 +238,7 @@ impl Opts {
         };
         let c = matches.opt_str("C").unwrap_or("0".to_string());
         let width = if matches.opt_present("u") {
-            let termsize::Size { cols, .. } = termsize::get().unwrap();
-            cols as usize
+            termsize::get().map(|t| t.cols as usize).unwrap_or(80)
         } else {
             matches.opt_str("o").unwrap_or("0".to_string()).parse().unwrap()
         };

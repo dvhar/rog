@@ -140,6 +140,7 @@ pub enum Op {
     SetGrepPos,
     ActxJmp(i64),
     ActxReset(Regex),
+    Truncate,
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -162,6 +163,7 @@ impl Clone for Op {
             Op::SetGrepPos => Op::SetGrepPos,
             Op::ActxJmp(v) => Op::ActxJmp(*v),
             Op::ActxReset(re) => Op::ActxReset(re.clone()),
+            Op::Truncate => Op::Truncate,
         }
     }
 }
@@ -171,6 +173,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
     let mut i = 0;
     let mut ax = 0;
     let mut bx = 0;
+    let mut pbx = 0; // printable_bx: may be truncated for width
     let mut ax_store = 0;
     let mut bx_store = 0;
     let mut readbytes = 0;
@@ -244,6 +247,7 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 ax = bx;
                 let nx = buf[bx..readbytes].iter().enumerate().find(|(_,b)|**b == b'\n');
                 bx = if let Some(n) = nx { (bx+n.0+1).min(readbytes) } else { readbytes };
+                pbx = bx;
                 line_num += 1;
             },
             Op::Match(ref re) => {
@@ -271,14 +275,15 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 }
             },
             Op::BctxNext(ip) => {
-                (ax, bx) = match rb.dequeue() {
+                (ax, bx, pbx) = match rb.dequeue() {
                     Some((a,b)) => {
-                        (a,b)
+                        let pbx_val = b;
+                        (a, b, pbx_val)
                     },
                     None => {
                         ctx_count = 0;
                         i = ip as usize;
-                        (ax_store, bx_store)
+                        (ax_store, bx_store, bx_store)
                     },
                 };
             },
@@ -302,10 +307,10 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                 }
             },
             Op::PrintPlain => {
-                io::stdout().write_all(&buf[ax..bx]).unwrap();
+                io::stdout().write_all(&buf[ax..pbx]).unwrap();
             },
             Op::PrintColor => {
-                color.as_ref().unwrap().borrow_mut().print(&buf[ax..bx], Some(fidx));
+                color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
             },
             Op::ActxJmp(ip) => {
                 if actx > 0 {
@@ -320,6 +325,21 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                     last_grepped_prev = last_grepped;
                     last_grepped = line_num;
                     rb.enqueue((ax, bx));
+                }
+            },
+            Op::Truncate => {
+                if opts.width > 0 {
+                    let has_nl = bx > ax && buf[bx-1] == b'\n';
+                    let content_end = if has_nl { bx - 1 } else { bx };
+                    let content_len = content_end - ax;
+                    let mut trunc = opts.width.min(content_len) + ax;
+                    while trunc < content_end && (buf[trunc] & 0b11000000) == 0b10000000 {
+                        trunc += 1;
+                    }
+                    if trunc < content_end {
+                        buf[trunc] = b'\n';
+                        pbx = trunc + 1;
+                    }
                 }
             },
         }
@@ -424,12 +444,16 @@ pub fn vm_tail(opts: &mut Opts) {
                         ops.push(Op::Match(vre.clone()));
                         ops.push(Op::MatchJmp(vjump));
                     }
+                    if opts.width > 0 { ops.push(Op::Truncate); }
                     ops.push(print_op.clone());
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
                     }
                     jumps.set_place(bjump, ops.len());
                     ops.push(Op::CtxJmp(ctx_start));
+                } else if opts.width > 0 {
+                    ops.push(Op::Truncate);
+                    ops.push(print_op.clone());
                 } else {
                     ops.push(print_op.clone());
                 }
@@ -443,6 +467,7 @@ pub fn vm_tail(opts: &mut Opts) {
                         ops.push(Op::MatchJmp(vjump));
                     }
                     ops.push(Op::ActxReset(r.clone()));
+                    if opts.width > 0 { ops.push(Op::Truncate); }
                     if opts.theme == None {
                         ops.push(Op::PrintPlain);
                     } else {
@@ -457,9 +482,10 @@ pub fn vm_tail(opts: &mut Opts) {
             },
             Err(e) => die!("Regex error for {}:{}", search, e),
         }
-    } else {
-        ops.push(print_op.clone());
+    } else if opts.width > 0 {
+        ops.push(Op::Truncate);
     }
+    ops.push(print_op.clone());
     if let Some(sp) = skip_print {
         jumps.set_place(sp, ops.len());
     }
