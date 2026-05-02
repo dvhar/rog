@@ -155,11 +155,8 @@ pub struct Opts {
     pub vgrep: Option<String>,
     pub word: bool,
     pub icase: bool,
-
     pub width: usize,
-    pub termfit: bool,
     pub theme: Option<String>,
-    pub onetheme: bool,
     pub fields: String,
     pub exclude: String,
     pub actx: usize,
@@ -168,7 +165,7 @@ pub struct Opts {
     pub server_mode: bool,
     pub tailfiles: Vec<String>,
     pub tcp_clients: Option<Arc<Mutex<HashMap<i64, TcpStream>>>>,
-    pub socket: Option<TcpStream>,
+
 }
 impl Opts {
     pub fn merge(self: &mut Self, other: &mut Opts) {
@@ -184,11 +181,8 @@ impl Opts {
         self.fifo |= other.fifo;
         self.word |= other.word;
         self.icase |= other.icase;
-        self.termfit |= other.termfit;
-        self.onetheme |= other.onetheme;
         self.server_mode |= other.server_mode;
         self.client_mode |= other.client_mode;
-
         self.width = self.width.max(other.width);
         self.actx = self.actx.max(other.actx);
         self.bctx = self.bctx.max(other.bctx);
@@ -224,7 +218,6 @@ impl Opts {
         opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
-        opts.optflag("n", "onecolor", "Uniform highlighting");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("h", "help", "print this help menu");
         let mut matches = match opts.parse(args) {
@@ -255,7 +248,6 @@ impl Opts {
             vgrep: matches.opt_str("v"),
             word: matches.opt_present("w"),
             icase: matches.opt_present("i"),
-            termfit: matches.opt_present("u"),
             width,
             theme,
             fields: matches.opt_str("r").unwrap_or(Default::default()),
@@ -265,9 +257,8 @@ impl Opts {
             server_mode: matches.opt_present("s"),
             tailfiles: mem::take(&mut matches.free),
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
-            onetheme: matches.opt_present("n"),
             tcp_clients: None,
-            socket: None,
+
         };
         if recurse && !matches.opt_present("P") {
             read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);
