@@ -754,6 +754,295 @@ fn test_remove_trailing_field() {
     run_test_stdin(&["-c", "-r", "key"], input, expected);
 }
 
+/// Headers: when tailing multiple files, a header line `===> path <===` is printed
+/// when switching from one file to another.
+#[test]
+fn test_tail_multiple_files_shows_headers() {
+    let id = std::process::id();
+    let file1 = format!("/tmp/rog_header_test1_{}", id);
+    let file2 = format!("/tmp/rog_header_test2_{}", id);
+
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+    std::fs::write(&file1, "").unwrap();
+    std::fs::write(&file2, "").unwrap();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-c", &file1, &file2])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Write to file1
+    let mut f1 = std::fs::OpenOptions::new().append(true).open(&file1).unwrap();
+    f1.write_all(b"line from file1\n").unwrap();
+    drop(f1);
+
+    // Small delay to ensure rog processes file1 event first
+    thread::sleep(Duration::from_millis(300));
+
+    // Write to file2
+    let mut f2 = std::fs::OpenOptions::new().append(true).open(&file2).unwrap();
+    f2.write_all(b"line from file2\n").unwrap();
+    drop(f2);
+
+    thread::sleep(Duration::from_millis(500));
+
+    let _ = Command::new("kill")
+        .args(&["-9", &child.id().to_string()])
+        .output()
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Both lines should be present
+    assert!(stdout.contains("line from file1"), "missing file1 data: {}", stdout);
+    assert!(stdout.contains("line from file2"), "missing file2 data: {}", stdout);
+
+    // Header should appear in output when tailing multiple files
+    assert!(
+        stdout.contains("===>"),
+        "header marker '===>' should appear when tailing multiple files: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("<==="),
+        "header marker '<===' should appear when tailing multiple files: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+}
+
+/// Headers: when tailing a single file, no header lines should appear.
+#[test]
+fn test_tail_single_file_no_headers() {
+    let id = std::process::id();
+    let file1 = format!("/tmp/rog_single_header_{}", id);
+
+    let _ = std::fs::remove_file(&file1);
+    std::fs::write(&file1, "").unwrap();
+
+    let child = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-c", &file1])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    let data = "line from single file\n";
+    let mut f1 = std::fs::OpenOptions::new().append(true).open(&file1).unwrap();
+    f1.write_all(data.as_bytes()).unwrap();
+    drop(f1);
+
+    thread::sleep(Duration::from_millis(500));
+
+    let _ = Command::new("kill")
+        .args(&["-9", &child.id().to_string()])
+        .output()
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Data should be present
+    assert!(
+        stdout.contains("line from single file"),
+        "missing data: {}",
+        stdout
+    );
+
+    // No headers should appear for a single file
+    assert!(
+        !stdout.contains("===>"),
+        "header marker '===>' should NOT appear when tailing a single file: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("<==="),
+        "header marker '<===' should NOT appear when tailing a single file: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(&file1);
+}
+
+/// Server with multiple files: when a server tails multiple files, headers are
+/// sent to connected clients when switching between files.
+#[test]
+fn test_server_multi_files_headers_to_client() {
+    let id = std::process::id();
+    let file1 = format!("/tmp/rog_svr_header1_{}", id);
+    let file2 = format!("/tmp/rog_svr_header2_{}", id);
+    let port = 19905;
+
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+    std::fs::write(&file1, "").unwrap();
+    std::fs::write(&file2, "").unwrap();
+
+    // Start server in multi-file mode (no fifo, just tailing files)
+    let mut server = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-s", "-c", "-d", &port.to_string(), &file1, &file2])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Start client connected to server
+    let client = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Write to file1
+    let mut f1 = std::fs::OpenOptions::new().append(true).open(&file1).unwrap();
+    f1.write_all(b"svr line from file1\n").unwrap();
+    drop(f1);
+
+    thread::sleep(Duration::from_millis(300));
+
+    // Write to file2 — this should trigger a header before the data
+    let mut f2 = std::fs::OpenOptions::new().append(true).open(&file2).unwrap();
+    f2.write_all(b"svr line from file2\n").unwrap();
+    drop(f2);
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill client
+    let _ = Command::new("kill")
+        .args(&["-INT", &client.id().to_string()])
+        .output()
+        .unwrap();
+    let client_output = client.wait_with_output().unwrap();
+
+    let client_stdout = String::from_utf8(client_output.stdout).unwrap();
+
+    // Client should receive data from both files
+    assert!(
+        client_stdout.contains("svr line from file1"),
+        "client missing file1 data: {}",
+        client_stdout
+    );
+    assert!(
+        client_stdout.contains("svr line from file2"),
+        "client missing file2 data: {}",
+        client_stdout
+    );
+
+    // Client should receive headers (server sends them to clients)
+    assert!(
+        client_stdout.contains("===>"),
+        "client should receive header markers when server tails multiple files: {}",
+        client_stdout
+    );
+    assert!(
+        client_stdout.contains("<==="),
+        "client should receive header markers when server tails multiple files: {}",
+        client_stdout
+    );
+
+    // Kill server and cleanup
+    let _ = Command::new("kill")
+        .args(&["-9", &server.id().to_string()])
+        .output()
+        .unwrap();
+    let _ = server.wait();
+    let _ = std::fs::remove_file(&file1);
+    let _ = std::fs::remove_file(&file2);
+}
+
+/// Client mode reading from socket: client itself does not generate headers
+/// even when connected to a server. The client merely processes the stream it
+/// receives (headers are generated by the server, not the client).
+/// This test uses a single-file server so the server sends no headers,
+/// verifying the client does not fabricate its own.
+#[test]
+fn test_client_no_headers_single_file_server() {
+    let id = std::process::id();
+    let fifo_path = format!("/tmp/rog_client_hdr_{}", id);
+    let port = 19906;
+    let _ = std::fs::remove_file(&fifo_path);
+
+    // Start server with single fifo (no headers in server mode either)
+    let mut server = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-s", "-f", &fifo_path, "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Start client
+    let client = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Write data to fifo
+    let test_data = "client_no_header_test\n";
+    let mut fifo_writer = std::fs::File::create(&fifo_path).unwrap();
+    fifo_writer.write_all(test_data.as_bytes()).unwrap();
+    drop(fifo_writer);
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill client
+    let _ = Command::new("kill")
+        .args(&["-INT", &client.id().to_string()])
+        .output()
+        .unwrap();
+    let client_output = client.wait_with_output().unwrap();
+
+    let client_stdout = String::from_utf8(client_output.stdout).unwrap();
+
+    // Data should be present
+    assert!(
+        client_stdout.contains("client_no_header_test"),
+        "client missing data: {}",
+        client_stdout
+    );
+
+    // Client should NOT have any headers (server is single-source, client never generates headers)
+    assert!(
+        !client_stdout.contains("===>"),
+        "client should NOT show headers when server has single source: {}",
+        client_stdout
+    );
+
+    // Kill server
+    let _ = Command::new("kill")
+        .args(&["-INT", &server.id().to_string()])
+        .output()
+        .unwrap();
+    let _ = server.wait();
+    let _ = std::fs::remove_file(&fifo_path);
+}
+
 /// Remove with grep and context: fields removed from all printed lines.
 #[test]
 fn test_remove_with_grep_context() {
