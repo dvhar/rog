@@ -1,5 +1,7 @@
 use {
     std::collections::{HashMap, BTreeSet},
+    std::net::TcpStream,
+    std::sync::{Arc, Mutex},
     termsize,
     getopts::Options,
     bat::{assets::HighlightingAssets, config::Config, controller::Controller, Input},
@@ -146,13 +148,14 @@ pub fn read_presets(swizzle: String, opts: &mut Opts) {
 #[derive(Debug)]
 pub struct Opts {
     pub host: String,
+    pub port: u16,
     pub fifo: bool,
     pub srvpath: Option<String>,
     pub grep: Option<String>,
     pub vgrep: Option<String>,
     pub word: bool,
     pub icase: bool,
-    pub limit: usize,
+
     pub width: usize,
     pub termfit: bool,
     pub theme: Option<String>,
@@ -161,13 +164,17 @@ pub struct Opts {
     pub exclude: String,
     pub actx: usize,
     pub bctx: usize,
-    pub server: bool,
+    pub client_mode: bool,
+    pub server_mode: bool,
     pub nameline: bool,
     pub tailfiles: Vec<String>,
+    pub tcp_clients: Option<Arc<Mutex<HashMap<i64, TcpStream>>>>,
+    pub socket: Option<TcpStream>,
 }
 impl Opts {
     pub fn merge(self: &mut Self, other: &mut Opts) {
         if self.host.is_empty() { self.host = mem::take(&mut other.host); };
+        if self.port == 0 { self.port = other.port; };
         if self.grep == None { self.grep = other.grep.take(); };
         if self.vgrep == None { self.vgrep = other.vgrep.take(); };
         if self.srvpath == None { self.srvpath = other.srvpath.take(); };
@@ -180,9 +187,9 @@ impl Opts {
         self.icase |= other.icase;
         self.termfit |= other.termfit;
         self.onetheme |= other.onetheme;
-        self.server |= other.server;
+        self.server_mode |= other.server_mode;
+        self.client_mode |= other.client_mode;
         self.nameline |= other.nameline;
-        self.limit = self.limit.max(other.limit);
         self.width = self.width.max(other.width);
         self.actx = self.actx.max(other.actx);
         self.bctx = self.bctx.max(other.bctx);
@@ -200,10 +207,9 @@ impl Opts {
     pub fn newargs(args: &Vec<String>, recurse: bool) -> Self {
         let mut opts = Options::new();
         opts.optopt("I", "ip", "ip of server", "HOST");
+        opts.optopt("d", "port", "tcp port (default: 19888)", "PORT");
         opts.optflag("k","client", "read from localhost in client mode");
         opts.optopt("f", "fifo", "path of fifo to create and read from", "PATH");
-        opts.optopt("t", "file", "path of file to tail in server mode", "PATH");
-        opts.optopt("l", "bytes", "number of bytes to read before exiting", "NUM");
         opts.optopt("o", "width", "limit number of bytes per row", "NUM");
         opts.optopt("r", "remove", "remove fields of the format field=value or field=\"value with spaces\"", "F1,F2,F3...");
         opts.optopt("g", "grep", "only show lines that match a pattern", "REGEX");
@@ -228,7 +234,7 @@ impl Opts {
             Err(e) => die!("bad args:{}", e),
         };
         if matches.opt_present("h") {
-            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional paramters to function the same as tail -f.\nUse -[f,s,t] to serve.\nOtherwise read from rog server and print.");
+            die!("{}\n{}",opts.usage(&args[0]), "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nOtherwise read from rog server and print.");
         }
         let theme = match (matches.opt_present("c"), matches.opt_present("m")) {
             (true,true) => die!("Cannot use 'c' with 'm'"),
@@ -244,24 +250,27 @@ impl Opts {
         };
         let mut opts = Opts {
             host: matches.opt_str("I").unwrap_or(if matches.opt_present("k") {"127.0.0.1".to_string()} else {Default::default()}),
+            port: matches.opt_str("d").unwrap_or("19888".to_string()).parse().expect("d must be a port number"),
             fifo: matches.opt_present("f"),
-            srvpath: matches.opt_str("f").map_or(matches.opt_str("t"),|t|Some(t)),
+            srvpath: matches.opt_str("f"),
             grep: matches.opt_str("w").map_or(matches.opt_str("g"),|g|Some(g)),
             vgrep: matches.opt_str("v"),
             word: matches.opt_present("w"),
             icase: matches.opt_present("i"),
-            limit: matches.opt_str("l").unwrap_or("0".to_string()).parse().unwrap(),
             termfit: matches.opt_present("u"),
             width,
             theme,
             fields: matches.opt_str("r").unwrap_or(Default::default()),
             actx: matches.opt_str("A").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
             bctx: matches.opt_str("B").unwrap_or(c.to_string()).parse().expect("A,B,C matches must be positive integers"),
-            server: matches.opt_present("s") || matches.opt_present("f") || matches.opt_present("t"),
+            client_mode: matches.opt_present("k"),
+            server_mode: matches.opt_present("s"),
             nameline: matches.opt_present("b"),
             tailfiles: mem::take(&mut matches.free),
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
             onetheme: matches.opt_present("n"),
+            tcp_clients: None,
+            socket: None,
         };
         if recurse && !matches.opt_present("P") {
             read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);

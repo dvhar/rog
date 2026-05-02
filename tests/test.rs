@@ -287,6 +287,280 @@ fn test_fifo_create_read_cleanup() {
     );
 }
 
+/// Client/Server: start a rog server with fifo + -s, connect a client with -k,
+/// write data to the fifo, and verify the client receives the output.
+/// This tests the full pipeline: accept_clients, ServerWrite op, ReadSocket op.
+#[test]
+fn test_server_fifo_client() {
+    let fifo_path = format!("/tmp/rog_test_server_fifo_{}", std::process::id());
+    let port = 19901;
+
+    // Ensure stale fifo is gone
+    let _ = std::fs::remove_file(&fifo_path);
+
+    // Start server in fifo mode with -s (server mode)
+    let server = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-s", "-f", &fifo_path, "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Give server time to create fifo and bind to port
+    thread::sleep(Duration::from_millis(500));
+
+    // Verify the fifo was created
+    assert!(
+        std::path::Path::new(&fifo_path).exists(),
+        "fifo should exist after server starts"
+    );
+
+    // Start client connected to localhost server
+    let client = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Give client time to connect
+    thread::sleep(Duration::from_millis(500));
+
+    // Write data to the fifo
+    let test_data = "server_mode_test_line\nsecond_server_line\n";
+    let mut fifo_writer = std::fs::File::create(&fifo_path).unwrap();
+    fifo_writer.write_all(test_data.as_bytes()).unwrap();
+    drop(fifo_writer); // closing writer causes EOF, rog will re-open fifo
+
+    // Give time for data to flow through server to client
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill the client first to flush its output
+    let kill_result = Command::new("kill")
+        .args(&["-INT", &client.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(kill_result.status.success(), "kill client failed");
+    let client_output = client.wait_with_output().unwrap();
+
+    // Verify client received the data
+    let client_stdout = String::from_utf8(client_output.stdout).unwrap();
+    assert!(
+        client_stdout.contains("server_mode_test_line"),
+        "client output missing 'server_mode_test_line': {}",
+        client_stdout
+    );
+    assert!(
+        client_stdout.contains("second_server_line"),
+        "client output missing 'second_server_line': {}",
+        client_stdout
+    );
+
+    // Kill the server
+    let kill_result = Command::new("kill")
+        .args(&["-INT", &server.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(kill_result.status.success(), "kill server failed");
+    let server_output = server.wait_with_output().unwrap();
+
+    // Verify server did NOT print the data to its own stdout (it should only
+    // broadcast to clients, not print locally)
+    let server_stdout = String::from_utf8(server_output.stdout).unwrap();
+    assert!(
+        !server_stdout.contains("server_mode_test_line"),
+        "server should NOT print data to stdout in server mode: {}",
+        server_stdout
+    );
+
+    // Verify the fifo was cleaned up
+    assert!(
+        !std::path::Path::new(&fifo_path).exists(),
+        "fifo should be removed after server exits"
+    );
+}
+
+/// Server with grep: server runs with -g filter, client only receives matching lines.
+/// This tests that the ServerWrite op is used in the grep path (not PrintPlain/PrintColor).
+#[test]
+fn test_server_grep_client() {
+    let fifo_path = format!("/tmp/rog_test_server_grep_{}", std::process::id());
+    let port = 19902;
+    let _ = std::fs::remove_file(&fifo_path);
+
+    // Start server with grep filter
+    let mut server = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-s", "-f", &fifo_path, "-c", "-g", "ERROR", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Start client
+    let client = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Write mixed data — only ERROR lines should reach the client
+    let test_data = "INFO: all good\nERROR: something broke\nINFO: still going\nERROR: another fail\n";
+    let mut fifo_writer = std::fs::File::create(&fifo_path).unwrap();
+    fifo_writer.write_all(test_data.as_bytes()).unwrap();
+    drop(fifo_writer);
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill client
+    let _ = Command::new("kill")
+        .args(&["-INT", &client.id().to_string()])
+        .output()
+        .unwrap();
+    let client_output = client.wait_with_output().unwrap();
+
+    let client_stdout = String::from_utf8(client_output.stdout).unwrap();
+
+    // Should contain ERROR lines
+    assert!(
+        client_stdout.contains("ERROR: something broke"),
+        "client should receive ERROR lines: {}",
+        client_stdout
+    );
+    assert!(
+        client_stdout.contains("ERROR: another fail"),
+        "client should receive ERROR lines: {}",
+        client_stdout
+    );
+
+    // Should NOT contain INFO lines
+    assert!(
+        !client_stdout.contains("INFO"),
+        "client should NOT receive INFO lines (grep filter): {}",
+        client_stdout
+    );
+
+    // Kill server and cleanup
+    let _ = Command::new("kill")
+        .args(&["-INT", &server.id().to_string()])
+        .output()
+        .unwrap();
+    server.wait().unwrap();
+    let _ = std::fs::remove_file(&fifo_path);
+}
+
+/// Multiple clients: two clients connect to the same server, both receive the data.
+#[test]
+fn test_server_multiple_clients() {
+    let fifo_path = format!("/tmp/rog_test_multi_{}", std::process::id());
+    let port = 19903;
+    let _ = std::fs::remove_file(&fifo_path);
+
+    // Start server
+    let mut server = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-s", "-f", &fifo_path, "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Start client 1
+    let client1 = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Start client 2
+    let client2 = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Write data to fifo
+    let test_data = "broadcast_test_data\n";
+    let mut fifo_writer = std::fs::File::create(&fifo_path).unwrap();
+    fifo_writer.write_all(test_data.as_bytes()).unwrap();
+    drop(fifo_writer);
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Kill both clients
+    let _ = Command::new("kill")
+        .args(&["-INT", &client1.id().to_string()])
+        .output()
+        .unwrap();
+    let _ = Command::new("kill")
+        .args(&["-INT", &client2.id().to_string()])
+        .output()
+        .unwrap();
+
+    let out1 = client1.wait_with_output().unwrap();
+    let out2 = client2.wait_with_output().unwrap();
+
+    let stdout1 = String::from_utf8(out1.stdout).unwrap();
+    let stdout2 = String::from_utf8(out2.stdout).unwrap();
+
+    // Both clients should receive the data
+    assert!(
+        stdout1.contains("broadcast_test_data"),
+        "client1 should receive broadcast data: {}",
+        stdout1
+    );
+    assert!(
+        stdout2.contains("broadcast_test_data"),
+        "client2 should receive broadcast data: {}",
+        stdout2
+    );
+
+    // Kill server and cleanup
+    let _ = Command::new("kill")
+        .args(&["-INT", &server.id().to_string()])
+        .output()
+        .unwrap();
+    server.wait().unwrap();
+    let _ = std::fs::remove_file(&fifo_path);
+}
+
+/// Client fails to connect when no server is running on the target host.
+#[test]
+fn test_client_no_server() {
+    let port = 19904; // unused port — no server listening
+    let output = Command::new(env!("CARGO_BIN_EXE_rog"))
+        .args(&["-k", "-c", "-d", &port.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+
+    // Should exit with error because no server is listening
+    assert!(
+        !output.status.success(),
+        "client should fail when no server is running"
+    );
+}
+
 /// File tailing: create 2 files, start rog watching them, append data, verify output.
 /// This tests vm_tail end-to-end: file watching, reading new content, and multi-file handling.
 #[test]

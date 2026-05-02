@@ -4,6 +4,8 @@ use {
     std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
     std::mem,
     std::sync::mpsc::Receiver,
+    std::sync::{Arc, Mutex},
+    std::net::{TcpListener, TcpStream},
     std::{fs, fs::File},
     std::path::PathBuf,
     regex::{Regex, RegexBuilder},
@@ -142,6 +144,8 @@ pub enum Op {
     ActxJmp(i64),
     ActxReset(Regex),
     Truncate,
+    ServerWrite,
+    ReadSocket(TcpStream),
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -166,11 +170,13 @@ impl Clone for Op {
             Op::ActxJmp(v) => Op::ActxJmp(*v),
             Op::ActxReset(re) => Op::ActxReset(re.clone()),
             Op::Truncate => Op::Truncate,
+            Op::ServerWrite => Op::ServerWrite,
+            Op::ReadSocket(_) => unreachable!("ReadSocket should never be cloned"),
         }
     }
 }
 
-pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
+pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Opts) {
     dbug_ops!(ops);
     let mut i = 0;
     let mut ax = 0;
@@ -278,6 +284,22 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
                     }
                 }
             },
+            Op::ReadSocket(ref mut stream) => {
+                bx = 0;
+                match stream.read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("socket read error:{}", e);
+                        return;
+                    }
+                }
+                rb.clear();
+            }
             Op::SliceWhole => {
                 ax = 0;
                 bx = readbytes;
@@ -352,6 +374,20 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
             Op::PrintColor => {
                 color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
             },
+            Op::ServerWrite => {
+                if let Some(ref clients) = opts.tcp_clients {
+                    let mut cm = clients.lock().unwrap();
+                    let mut dead = Vec::new();
+                    for (id, stream) in cm.iter_mut() {
+                        if stream.write_all(&buf[ax..pbx]).is_err() {
+                            dead.push(*id);
+                        }
+                    }
+                    for id in dead {
+                        cm.remove(&id);
+                    }
+                }
+            }
             Op::ActxJmp(ip) => {
                 if actx > 0 {
                     actx -= 1;
@@ -392,7 +428,13 @@ pub fn runvm(ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mut Op
 fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
     let mut jumps = JumpPositions::new();
 
-    let print_op = if opts.theme == None { Op::PrintPlain } else { Op::PrintColor };
+    let print_op = if opts.server_mode {
+        Op::ServerWrite
+    } else if opts.theme == None {
+        Op::PrintPlain
+    } else {
+        Op::PrintColor
+    };
     let mut ops = vec![
         read_op,
         Op::SliceLine(0),
@@ -469,11 +511,7 @@ fn build_ops(read_op: Op, opts: &mut Opts) -> Vec<Op> {
                     }
                     ops.push(Op::ActxReset(r.clone()));
                     if opts.width > 0 { ops.push(Op::Truncate); }
-                    if opts.theme == None {
-                        ops.push(Op::PrintPlain);
-                    } else {
-                        ops.push(Op::PrintColor);
-                    }
+                    ops.push(print_op.clone());
                     if vjump != 0 {
                         jumps.set_place(vjump, ops.len());
                     }
@@ -575,5 +613,38 @@ pub fn vm_fifo(path: String, opts: &mut Opts) {
     }).expect("Error setting Ctrl-C handler");
 
     let ops = build_ops(Op::ReadFifo(path), opts);
+    runvm(ops, HashMap::new(), opts);
+}
+
+/// Accept incoming client connections in a background thread.
+/// Clients are stored in opts.tcp_clients as a shared HashMap.
+pub fn accept_clients(opts: &mut Opts) {
+    let listener = match TcpListener::bind(format!("0.0.0.0:{}", opts.port)) {
+        Ok(l) => l,
+        Err(_) => die!("Could not bind to port {}. Is a server already running?", opts.port),
+    };
+    let clients = Arc::new(Mutex::new(HashMap::<i64, TcpStream>::new()));
+    opts.tcp_clients = Some(clients.clone());
+    std::thread::spawn(move || {
+        let mut client_id: i64 = 0;
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    client_id += 1;
+                    let _ = clients.lock().unwrap().insert(client_id, stream);
+                }
+                Err(e) => eprintln!("error accepting connection: {}", e),
+            }
+        }
+    });
+}
+
+/// Connect to a rog server, read raw bytes from the socket, and process them through the VM.
+pub fn client_mode(opts: &mut Opts) {
+    let stream = match TcpStream::connect(format!("{}:{}", opts.host, opts.port)) {
+        Ok(s) => s,
+        Err(e) => die!("Could not connect to {}:{}, Error: {}", opts.host, opts.port, e),
+    };
+    let ops = build_ops(Op::ReadSocket(stream), opts);
     runvm(ops, HashMap::new(), opts);
 }
