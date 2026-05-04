@@ -168,6 +168,7 @@ pub struct Opts {
     pub parse_headers: bool,
     pub start_pattern: Option<String>,
     pub stop_pattern: Option<String>,
+    pub lines: usize,
 
 }
 impl Opts {
@@ -197,6 +198,7 @@ impl Opts {
         self.parse_headers |= other.parse_headers;
         if self.start_pattern == None { self.start_pattern = other.start_pattern.take(); }
         if self.stop_pattern == None { self.stop_pattern = other.stop_pattern.take(); }
+        if self.lines == 0 { self.lines = other.lines; }
     }
 
     pub fn new() -> Self {
@@ -229,6 +231,7 @@ impl Opts {
         opts.optflag("H", "parse-headers", "parse tail file headers (==> file <==) in stdin/socket input");
         opts.optopt("a", "start", "only print lines after a matching line is found", "REGEX");
         opts.optopt("b", "stop", "stop printing (and exit if no -a) after a matching line is found", "REGEX");
+        opts.optopt("l", "lines", "print N more lines after stop pattern before exiting", "NUM");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
@@ -285,6 +288,7 @@ impl Opts {
             parse_headers: matches.opt_present("H"),
             start_pattern: matches.opt_str("a"),
             stop_pattern: matches.opt_str("b"),
+            lines: matches.opt_str("l").unwrap_or_else(|| "0".to_string()).parse::<usize>().unwrap_or(0),
 
         };
         if recurse && !matches.opt_present("P") {

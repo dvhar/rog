@@ -1296,3 +1296,180 @@ fn test_stop_pattern_no_trailing_newline() {
     let expected = "keep\nSTOP here";
     run_test_stdin(&["-c", "-b", "STOP"], input, expected);
 }
+
+// ─── Lines (-l) After Stop Pattern Tests ──────────────────────────────────
+
+/// -b with -l 1: stop line plus exactly 1 more line, then exit.
+#[test]
+fn test_stop_with_lines_one() {
+    let input = "line1\nSTOP here\nextra one\nextra two\n";
+    let expected = "line1\nSTOP here\nextra one";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "1"], input, expected);
+}
+
+/// -b with -l 2: stop line plus exactly 2 more lines, then exit.
+#[test]
+fn test_stop_with_lines_two() {
+    let input = "line1\nSTOP here\nextra one\nextra two\nextra three\n";
+    let expected = "line1\nSTOP here\nextra one\nextra two";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -b with -l 3: stop line plus exactly 3 more lines, then exit.
+#[test]
+fn test_stop_with_lines_three() {
+    let input = "line1\nSTOP here\ne1\ne2\ne3\ne4\n";
+    let expected = "line1\nSTOP here\ne1\ne2\ne3";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "3"], input, expected);
+}
+
+/// -b with -l N: the line immediately after the N extra lines is NOT printed.
+#[test]
+fn test_stop_with_lines_excludes_next() {
+    let input = "keep\nSTOP here\nafter1\nafter2\nshould_not_appear\n";
+    let expected = "keep\nSTOP here\nafter1\nafter2";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -b with -l 0 is equivalent to plain -b (no extra lines).
+#[test]
+fn test_stop_with_lines_zero() {
+    let input = "print this\nSTOP here\nskip this\n";
+    let expected = "print this\nSTOP here";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "0"], input, expected);
+}
+
+/// -b with -l N but fewer lines remain than N: prints what's available and exits.
+#[test]
+fn test_stop_with_lines_not_enough() {
+    let input = "line1\nSTOP here\ne1\n";
+    let expected = "line1\nSTOP here\ne1";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "5"], input, expected);
+}
+
+/// -b with -l N and no match: all lines print (no extra line handling needed).
+#[test]
+fn test_stop_with_lines_no_match() {
+    let input = "line1\nline2\nline3\n";
+    let expected = "line1\nline2\nline3";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -l but no -b: start pattern resumes printing after stop countdown.
+#[test]
+fn test_start_stop_with_lines_repeat_basic() {
+    let input = "skip1\nSTART\nkeep1\nSTOP here\nafter1\nafter2\nskip2\nSTART\nkeep2\nSTOP here\nafter3\nafter4\nskip3\n";
+    let expected = "START\nkeep1\nSTOP here\nafter1\nafter2\nSTART\nkeep2\nSTOP here\nafter3\nafter4";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -b with -l 1: exactly one line after each STOP.
+#[test]
+fn test_start_stop_with_lines_one_each() {
+    let input = "A\nSTART B\nC\nSTOP D\nE\nF\nSTART G\nH\nSTOP I\nJ\nK\n";
+    let expected = "START B\nC\nSTOP D\nE\nSTART G\nH\nSTOP I\nJ";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "1"], input, expected);
+}
+
+/// -a with -b with -l N: second stop during countdown resets the countdown.
+#[test]
+fn test_start_stop_with_lines_reset_countdown() {
+    // After first STOP, await=3. Second STOP appears while awaiting -> resets to 3.
+    // So we get 2 extra lines after second STOP instead of resuming at START.
+    let input = "A\nSTART B\nC\nSTOP D\nE\nSTOP F\nG\nH\nSKIP I\n";
+    let expected = "START B\nC\nSTOP D\nE\nSTOP F\nG\nH";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -b with -l N: no second start or stop during countdown — just extra lines then exit.
+#[test]
+fn test_start_stop_with_lines_no_resume() {
+    let input = "skip\nSTART here\ndata line\nSTOP marker\nafter1\nafter2\nafter3\n";
+    let expected = "START here\ndata line\nSTOP marker\nafter1\nafter2";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -b with -l N: stop appears before start — countdown is not active initially.
+/// First START triggers printing. When STOP fires (await=0), countdown starts.
+#[test]
+fn test_start_stop_with_lines_stop_before_start() {
+    let input = "STOP early\nSTART here\nkeep1\nkeep2\nSTOP end\nafter1\nafter2\nskip\n";
+    let expected = "START here\nkeep1\nkeep2\nSTOP end\nafter1\nafter2";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -b with -l N: multiple cycles with exact counts.
+#[test]
+fn test_start_stop_with_lines_multiple_cycles() {
+    let input =
+        "A1\nS1 B1\nC1\nT1 D1\nE1\nA2\nS2 B2\nC2\nT2 D2\nE2\nA3\n";
+    // S=START, T=STOP. -l 1 => 1 extra line after each STOP
+    let expected = "S1 B1\nC1\nT1 D1\nE1\nS2 B2\nC2\nT2 D2\nE2";
+    run_test_stdin(&["-c", "-a", "S", "-b", "T", "-l", "1"], input, expected);
+}
+
+/// -a with -b with -l 0: behaves like plain -a -b (no extra lines).
+#[test]
+fn test_start_stop_with_lines_zero_extra() {
+    let input = "skip\nSTART keep STOP skip2 START keep2 STOP skip3\n";
+    let expected = "START keep STOP START keep2 STOP";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "0"], input, expected);
+}
+
+/// -a with -b with -l N: extra lines can contain stop pattern without resetting.
+/// (Only a stop while printing resets countdown; during countdown, stop resets it again.)
+#[test]
+fn test_stop_in_extra_lines_resets() {
+    // STOP in the extra-2 window: since await > 0 and StopCheck fires, reset to 3
+    let input = "A\nSTART B\nC\nSTOP D\nE\nSTOP F\nG\nH\nI\n";
+    let expected = "START B\nC\nSTOP D\nE\nSTOP F\nG\nH";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -b with -l N on first line: stop line plus N extra lines.
+#[test]
+fn test_stop_with_lines_first_line() {
+    let input = "STOP now\nafter1\nafter2\nafter3\n";
+    let expected = "STOP now\nafter1\nafter2";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -a with -b with -l N: start appears on first line.
+#[test]
+fn test_start_stop_with_lines_first_line() {
+    let input = "START B\nC\nSTOP D\nE\nF\n";
+    let expected = "START B\nC\nSTOP D\nE\nF";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}
+
+/// -b with -l N and grep: stop/lines controls outer window, grep filters inside.
+#[test]
+fn test_stop_with_lines_and_grep() {
+    let input = "INFO ok\nERROR boom\nINFO more\nSTOP here\nINFO extra1\nERROR extra2\nSKIP me\n";
+    let expected = "INFO ok\nERROR boom\nINFO more\nSTOP here\nINFO extra1\nERROR extra2";
+    run_test_stdin(&["-c", "-b", "STOP", "-l", "2", "-g", "ERROR|INFO"], input, expected);
+}
+
+/// -a with -b with -l N and grep: combined filtering in repeat mode.
+#[test]
+fn test_start_stop_with_lines_and_grep() {
+    let input = "skip\nSTART B\nINFO C\nERROR D\nSTOP E\nINFO F\nSKIP G\nSTART H\nINFO I\nERROR J\nSTOP K\n";
+    let expected = "START B\nINFO C\nERROR D\nSTOP E\nINFO F\nSTART H\nINFO I\nERROR J\nSTOP K";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "1", "-g", "ERROR|INFO"], input, expected);
+}
+
+/// -a with -b with -l N and vgrep: exclude lines from output in repeat mode.
+#[test]
+fn test_start_stop_with_lines_and_vgrep() {
+    let input = "skip\nSTART B\nkeep C\nfilter D\nSTOP E\nF\nG\nskip2\n";
+    let expected = "START B\nkeep C\nSTOP E\nF";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "1", "-v", "filter"], input, expected);
+}
+
+/// -a with -b with -l N: no second start/stop after first countdown — exits cleanly.
+#[test]
+fn test_start_stop_with_lines_ends_without_resume() {
+    let input = "pre\nSTART start\nmiddle\nSTOP end\nafter1\nafter2\nafter3 not shown\n";
+    let expected = "START start\nmiddle\nSTOP end\nafter1\nafter2";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
+}

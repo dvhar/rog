@@ -184,6 +184,8 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     let mut ax = 0;
     let mut printing = true;
     if opts.start_pattern.is_some() { printing = false; }
+    let mut await_lines: i64 = 0;
+    let mut ever_started: bool = false;
     let mut bx = 0;
     let mut pbx = 0; // printable_bx: may be truncated for width
     let mut ax_store = 0;
@@ -388,22 +390,128 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::PrintPlain => {
-                io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                let line = unsafe { std::str::from_utf8_unchecked(&buf[ax..pbx]) }.trim();
+                // dbug!("PP: print={} await={} stop_print={} line={:?}", printing, await_lines, opts.stop_pattern.is_some() && !printing, line);
+                // When both start and stop patterns are set, check for intra-line splitting
+                if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
+                    // Line contains both START and STOP — print only the segments
+                    for &(start, end) in &segments {
+                        dbug!("PP: printing segment {}-{}: {:?}", start, end, unsafe{std::str::from_utf8_unchecked(&buf[ax + start..ax + end])});
+                        io::stdout().write_all(&buf[ax + start..ax + end]).unwrap();
+                    }
+                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                    // -a/-b/-l: print while counting down or printing; skip while awaiting next start
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                        io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                    } else if !printing {
+                        // Awaiting next start pattern — skip, continue to Jmp(1)
+                    } else {
+                        io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                    }
+                } else if opts.lines > 0 && opts.start_pattern.is_none() {
+                    // -b/-l: print normally until stop pattern fires, then countdown N extra lines
+                    if !printing && await_lines == 0 {
+                        return; // not printing and no countdown active — done
+                    }
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                        io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                    } else {
+                        // Still printing before stop — just print
+                        io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                    }
+                } else if opts.stop_pattern.is_some() && !printing && (opts.start_pattern.is_none() || await_lines > 0) {
+                    // Stop pattern matched (StopCheck set !printing) — print the stop line.
+                    // Only print when no start pattern exists (plain -b), or countdown is active (-a -b -l N).
+                    // When both start and stop exist without countdown, skip lines until next START.
+                    io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                } else {
+                    io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                }
             },
             Op::PrintColor => {
-                color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                // When both start and stop patterns are set, check for intra-line splitting
+                if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
+                    for &(start, end) in &segments {
+                        color.as_ref().unwrap().borrow_mut().print(&buf[ax + start..ax + end], Some(fidx));
+                    }
+                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                    // -a/-b/-l: print while counting down or printing; skip while awaiting next start
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                        color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                    } else if !printing {
+                        // Awaiting next start pattern — skip, continue to Jmp(1)
+                    } else {
+                        color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                    }
+                } else if opts.lines > 0 && opts.start_pattern.is_none() {
+                    // -b/-l: print normally until stop pattern fires, then countdown N extra lines
+                    if !printing && await_lines == 0 {
+                        return; // not printing and no countdown active — done
+                    }
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                        color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                    } else {
+                        // Still printing before stop — just print
+                        color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                    }
+                } else if opts.stop_pattern.is_some() && !printing && (opts.start_pattern.is_none() || await_lines > 0) {
+                    // Stop pattern matched (StopCheck set !printing) — print the stop line.
+                    // Only print when no start pattern, or countdown is active.
+                    color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                } else {
+                    color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                }
             },
             Op::ServerWrite => {
-                if let Some(ref clients) = opts.tcp_clients {
-                    let mut cm = clients.lock().unwrap();
-                    let mut dead = Vec::new();
-                    for (id, stream) in cm.iter_mut() {
-                        if stream.write_all(&buf[ax..pbx]).is_err() {
-                            dead.push(*id);
+                // When both start and stop patterns are set, check for intra-line splitting
+                let do_write = if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
+                    if let Some(ref clients) = opts.tcp_clients {
+                        let mut cm = clients.lock().unwrap();
+                        for (_, stream) in cm.iter_mut() {
+                            for &(start, end) in &segments {
+                                let _ = stream.write_all(&buf[ax + start..ax + end]);
+                            }
                         }
                     }
-                    for id in dead {
-                        cm.remove(&id);
+                    true
+                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                    } else if !printing {
+                        // awaiting next start — skip
+                    } else {}
+                    true
+                } else if opts.lines > 0 && opts.start_pattern.is_none() {
+                    // -b/-l: print normally until stop, then countdown N extra lines
+                    if !printing && await_lines == 0 {
+                        return; // not printing and no countdown active
+                    }
+                    if await_lines > 0 {
+                        await_lines -= 1;
+                    }
+                    true
+                } else if opts.stop_pattern.is_some() && !printing && (opts.start_pattern.is_none() || await_lines > 0) {
+                    // Stop pattern matched — write stop line when no start pattern or countdown active
+                    true
+                } else {
+                    true
+                };
+                if do_write {
+                    if let Some(ref clients) = opts.tcp_clients {
+                        let mut cm = clients.lock().unwrap();
+                        let mut dead = Vec::new();
+                        for (id, stream) in cm.iter_mut() {
+                            if stream.write_all(&buf[ax..pbx]).is_err() {
+                                dead.push(*id);
+                            }
+                        }
+                        for id in dead {
+                            cm.remove(&id);
+                        }
                     }
                 }
             }
@@ -485,9 +593,14 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::StartAwait(ref re, ip) => {
+                // dbug!("SA: print={} line={:?} ax={} bx={}", printing, unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}.trim(), ax, bx);
                 if !printing {
                     if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
                         printing = true;
+                        ever_started = true;
+                        await_lines = 0;
+                    } else if opts.lines > 0 && opts.stop_pattern.is_some() {
+                        // countdown active or not — fall through so StopCheck can fire
                     } else {
                         i = ip as usize;
                         continue;
@@ -495,17 +608,82 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::StopCheck(ref re) => {
+                // dbug!("SC: print={} ever_started={} line={:?} match={}", printing, ever_started, unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}.trim(), re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}));
                 if printing && re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    // Active printing — stop and start countdown
                     printing = false;
+                    await_lines = (opts.lines as i64) + 1;
+                } else if !printing && opts.start_pattern.is_some() && ever_started && re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    // New stop pattern while awaiting — reset countdown
+                    // Only if we've ever started printing (ignores STOP before any START)
+                    await_lines = (opts.lines as i64) + 1;
                 }
             },
             Op::ExitVm => {
-                if opts.start_pattern.is_none() && !printing {
+                // Don't exit on stop pattern while countdown is still active
+                // (PrintPlain handler handles exiting when countdown reaches 0)
+                if opts.start_pattern.is_none() && !printing && !(opts.lines > 0 && await_lines > 0) {
                     return;
                 }
             },
         }
         i += 1;
+    }
+}
+
+/// Extract and return segments between START and STOP patterns within a line.
+/// Returns None if the line does not contain both patterns.
+/// Returns Some(vec of byte ranges) with the segments to print.
+fn extract_start_stop_segments(line: &[u8], opts: &Opts) -> Option<Vec<(usize, usize)>> {
+    if opts.start_pattern.is_none() || opts.stop_pattern.is_none() {
+        return None;
+    }
+    let start_re = match Regex::new(opts.start_pattern.as_ref().unwrap()) {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+    let stop_re = match Regex::new(opts.stop_pattern.as_ref().unwrap()) {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+    let line_str = unsafe { std::str::from_utf8_unchecked(line) };
+    // Check if line contains both patterns
+    if !start_re.is_match(line_str) || !stop_re.is_match(line_str) {
+        return None;
+    }
+    let mut segments = Vec::new();
+    let mut pos = 0;
+    loop {
+        // Find next START from pos
+        if let Some(start_match) = start_re.find(&line_str[pos..]) {
+            let start_abs = pos + start_match.start();
+            // dbug!("ESS: START at {}-{} (abs {})", start_match.start(), start_match.end(), start_abs);
+            // Find STOP after this START
+            let after_start = pos + start_match.end();
+            if let Some(stop_match) = stop_re.find(&line_str[after_start..]) {
+                let stop_abs = after_start + stop_match.end();
+                // Include trailing newline or space in the segment
+                let mut end = stop_abs;
+                if end < line_str.len() {
+                    let ch = line_str[end..].chars().next().unwrap();
+                    if ch == '\n' || ch == '\r' || ch == ' ' {
+                        end += ch.len_utf8();
+                    }
+                }
+                // dbug!("ESS: STOP at {}-{} (abs {}), segment {}-{}", stop_match.start(), stop_match.end(), stop_abs, start_abs, end);
+                segments.push((start_abs, end));
+                pos = stop_abs;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments)
     }
 }
 
@@ -640,13 +818,29 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
     }
     if let Some(h) = &header_op { ops.push(h.clone()); }
     ops.push(print_op.clone());
-    if let Some(sp) = skip_print {
-        jumps.set_place(sp, ops.len());
-    }
     if let Some(vj) = vgreps_jump {
         jumps.set_place(vj, ops.len());
     }
-    if opts.stop_pattern.is_some() && opts.start_pattern.is_none() {
+    // Set up skip_print target (MatchJmp for non-grep-matching lines)
+    // When stop pattern exists AND -l is used, redirect to a PrintPlain so
+    // stop/start lines are printed even if they don't match the grep filter.
+    if let Some(sp) = skip_print {
+        if opts.stop_pattern.is_some() && opts.lines > 0 {
+            // Push an extra PrintPlain for non-grep-matching lines
+            // This handles the case where STOP line doesn't match grep
+            let skip_target = ops.len();
+            ops.push(print_op.clone());
+            jumps.set_place(sp, skip_target);  // points to this PrintPlain
+            if opts.start_pattern.is_none() {
+                ops.push(Op::ExitVm);
+            }
+        } else {
+            // No stop pattern or no -l: skip should go to the Jmp(1) or ExitVm
+            jumps.set_place(sp, ops.len());
+        }
+    }
+    // For non-grep stop pattern: ExitVm is needed after stop line prints
+    if skip_print.is_none() && opts.stop_pattern.is_some() && opts.start_pattern.is_none() {
         ops.push(Op::ExitVm);
     }
     ops.push(Op::Jmp(1));
