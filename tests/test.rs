@@ -1408,14 +1408,6 @@ fn test_start_stop_with_lines_multiple_cycles() {
     run_test_stdin(&["-c", "-a", "S", "-b", "T", "-l", "1"], input, expected);
 }
 
-/// -a with -b with -l 0: behaves like plain -a -b (no extra lines).
-#[test]
-fn test_start_stop_with_lines_zero_extra() {
-    let input = "skip\nSTART keep STOP skip2 START keep2 STOP skip3\n";
-    let expected = "START keep STOP START keep2 STOP";
-    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "0"], input, expected);
-}
-
 /// -a with -b with -l N: extra lines can contain stop pattern without resetting.
 /// (Only a stop while printing resets countdown; during countdown, stop resets it again.)
 #[test]

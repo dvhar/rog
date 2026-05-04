@@ -390,16 +390,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::PrintPlain => {
-                let line = unsafe { std::str::from_utf8_unchecked(&buf[ax..pbx]) }.trim();
-                // dbug!("PP: print={} await={} stop_print={} line={:?}", printing, await_lines, opts.stop_pattern.is_some() && !printing, line);
-                // When both start and stop patterns are set, check for intra-line splitting
-                if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
-                    // Line contains both START and STOP — print only the segments
-                    for &(start, end) in &segments {
-                        dbug!("PP: printing segment {}-{}: {:?}", start, end, unsafe{std::str::from_utf8_unchecked(&buf[ax + start..ax + end])});
-                        io::stdout().write_all(&buf[ax + start..ax + end]).unwrap();
-                    }
-                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                if opts.lines > 0 && opts.start_pattern.is_some() {
                     // -a/-b/-l: print while counting down or printing; skip while awaiting next start
                     if await_lines > 0 {
                         await_lines -= 1;
@@ -431,12 +422,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::PrintColor => {
-                // When both start and stop patterns are set, check for intra-line splitting
-                if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
-                    for &(start, end) in &segments {
-                        color.as_ref().unwrap().borrow_mut().print(&buf[ax + start..ax + end], Some(fidx));
-                    }
-                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                if opts.lines > 0 && opts.start_pattern.is_some() {
                     // -a/-b/-l: print while counting down or printing; skip while awaiting next start
                     if await_lines > 0 {
                         await_lines -= 1;
@@ -467,24 +453,12 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 }
             },
             Op::ServerWrite => {
-                // When both start and stop patterns are set, check for intra-line splitting
-                let do_write = if let Some(segments) = extract_start_stop_segments(&buf[ax..pbx], opts) {
-                    if let Some(ref clients) = opts.tcp_clients {
-                        let mut cm = clients.lock().unwrap();
-                        for (_, stream) in cm.iter_mut() {
-                            for &(start, end) in &segments {
-                                let _ = stream.write_all(&buf[ax + start..ax + end]);
-                            }
-                        }
-                    }
-                    true
-                } else if opts.lines > 0 && opts.start_pattern.is_some() {
+                if opts.lines > 0 && opts.start_pattern.is_some() {
                     if await_lines > 0 {
                         await_lines -= 1;
                     } else if !printing {
                         // awaiting next start — skip
-                    } else {}
-                    true
+                    }
                 } else if opts.lines > 0 && opts.start_pattern.is_none() {
                     // -b/-l: print normally until stop, then countdown N extra lines
                     if !printing && await_lines == 0 {
@@ -493,25 +467,17 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     if await_lines > 0 {
                         await_lines -= 1;
                     }
-                    true
-                } else if opts.stop_pattern.is_some() && !printing && (opts.start_pattern.is_none() || await_lines > 0) {
-                    // Stop pattern matched — write stop line when no start pattern or countdown active
-                    true
-                } else {
-                    true
-                };
-                if do_write {
-                    if let Some(ref clients) = opts.tcp_clients {
-                        let mut cm = clients.lock().unwrap();
-                        let mut dead = Vec::new();
-                        for (id, stream) in cm.iter_mut() {
-                            if stream.write_all(&buf[ax..pbx]).is_err() {
-                                dead.push(*id);
-                            }
+                }
+                if let Some(ref clients) = opts.tcp_clients {
+                    let mut cm = clients.lock().unwrap();
+                    let mut dead = Vec::new();
+                    for (id, stream) in cm.iter_mut() {
+                        if stream.write_all(&buf[ax..pbx]).is_err() {
+                            dead.push(*id);
                         }
-                        for id in dead {
-                            cm.remove(&id);
-                        }
+                    }
+                    for id in dead {
+                        cm.remove(&id);
                     }
                 }
             }
@@ -628,62 +594,6 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
             },
         }
         i += 1;
-    }
-}
-
-/// Extract and return segments between START and STOP patterns within a line.
-/// Returns None if the line does not contain both patterns.
-/// Returns Some(vec of byte ranges) with the segments to print.
-fn extract_start_stop_segments(line: &[u8], opts: &Opts) -> Option<Vec<(usize, usize)>> {
-    if opts.start_pattern.is_none() || opts.stop_pattern.is_none() {
-        return None;
-    }
-    let start_re = match Regex::new(opts.start_pattern.as_ref().unwrap()) {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
-    let stop_re = match Regex::new(opts.stop_pattern.as_ref().unwrap()) {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
-    let line_str = unsafe { std::str::from_utf8_unchecked(line) };
-    // Check if line contains both patterns
-    if !start_re.is_match(line_str) || !stop_re.is_match(line_str) {
-        return None;
-    }
-    let mut segments = Vec::new();
-    let mut pos = 0;
-    loop {
-        // Find next START from pos
-        if let Some(start_match) = start_re.find(&line_str[pos..]) {
-            let start_abs = pos + start_match.start();
-            // dbug!("ESS: START at {}-{} (abs {})", start_match.start(), start_match.end(), start_abs);
-            // Find STOP after this START
-            let after_start = pos + start_match.end();
-            if let Some(stop_match) = stop_re.find(&line_str[after_start..]) {
-                let stop_abs = after_start + stop_match.end();
-                // Include trailing newline or space in the segment
-                let mut end = stop_abs;
-                if end < line_str.len() {
-                    let ch = line_str[end..].chars().next().unwrap();
-                    if ch == '\n' || ch == '\r' || ch == ' ' {
-                        end += ch.len_utf8();
-                    }
-                }
-                // dbug!("ESS: STOP at {}-{} (abs {}), segment {}-{}", stop_match.start(), stop_match.end(), stop_abs, start_abs, end);
-                segments.push((start_abs, end));
-                pos = stop_abs;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    if segments.is_empty() {
-        None
-    } else {
-        Some(segments)
     }
 }
 
