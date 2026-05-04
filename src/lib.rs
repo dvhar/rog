@@ -79,7 +79,7 @@ impl JumpPositions {
                         *idx = *self.jumps.get(idx).expect("error in placeholder");
                     }
                 },
-                _ => {},
+                _ => {}
             }
         };
     }
@@ -140,6 +140,9 @@ pub enum Op {
     ServerWrite,
     ReadSocket(TcpStream),
     ParseHeader(usize),
+    StartAwait(Regex, i64),
+    StopCheck(Regex),
+    ExitVm,
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -168,6 +171,9 @@ impl Clone for Op {
             Op::ServerWrite => Op::ServerWrite,
             Op::ReadSocket(_) => unreachable!("ReadSocket should never be cloned"),
             Op::ParseHeader(v) => Op::ParseHeader(*v),
+            Op::StartAwait(re, ip) => Op::StartAwait(re.clone(), *ip),
+            Op::StopCheck(re) => Op::StopCheck(re.clone()),
+            Op::ExitVm => Op::ExitVm,
         }
     }
 }
@@ -176,6 +182,8 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     dbug_ops!(ops);
     let mut i = 0;
     let mut ax = 0;
+    let mut printing = true;
+    if opts.start_pattern.is_some() { printing = false; }
     let mut bx = 0;
     let mut pbx = 0; // printable_bx: may be truncated for width
     let mut ax_store = 0;
@@ -476,6 +484,26 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     }
                 }
             },
+            Op::StartAwait(ref re, ip) => {
+                if !printing {
+                    if re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                        printing = true;
+                    } else {
+                        i = ip as usize;
+                        continue;
+                    }
+                }
+            },
+            Op::StopCheck(ref re) => {
+                if printing && re.is_match(unsafe{std::str::from_utf8_unchecked(&buf[ax..bx])}) {
+                    printing = false;
+                }
+            },
+            Op::ExitVm => {
+                if opts.start_pattern.is_none() && !printing {
+                    return;
+                }
+            },
         }
         i += 1;
     }
@@ -498,6 +526,19 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
         read_op,
         Op::SliceLine(0),
     ];
+    // Insert start/stop pattern logic right after slice, before any parsing
+    if let Some(ref re) = opts.start_pattern {
+        let start_re = RegexBuilder::new(re.as_str())
+            .case_insensitive(opts.icase).build()
+            .expect("start_pattern regex error");
+        ops.push(Op::StartAwait(start_re, 1));
+    }
+    if let Some(ref re) = opts.stop_pattern {
+        let stop_re = RegexBuilder::new(re.as_str())
+            .case_insensitive(opts.icase).build()
+            .expect("stop_pattern regex error");
+        ops.push(Op::StopCheck(stop_re));
+    }
     if opts.parse_headers {
         ops.push(Op::ParseHeader(1));
     }
@@ -604,6 +645,9 @@ fn build_ops(read_op: Op, opts: &mut Opts, print_header: bool) -> Vec<Op> {
     }
     if let Some(vj) = vgreps_jump {
         jumps.set_place(vj, ops.len());
+    }
+    if opts.stop_pattern.is_some() && opts.start_pattern.is_none() {
+        ops.push(Op::ExitVm);
     }
     ops.push(Op::Jmp(1));
 

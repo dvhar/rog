@@ -1150,3 +1150,149 @@ Jan  3 another syslog line"#;
         auth_codes
     );
 }
+
+// ─── Start/Stop Pattern Tests (-a and -b) ──────────────────────────────────
+
+/// -a only: skip lines until start pattern matches (inclusive), then print rest.
+#[test]
+fn test_start_pattern_only() {
+    let input = "skip this\nalso skip\nSTART here\nprint this\nand this\n";
+    let expected = "START here\nprint this\nand this";
+    run_test_stdin(&["-c", "-a", "START"], input, expected);
+}
+
+/// -a with no match: nothing is printed.
+#[test]
+fn test_start_pattern_no_match() {
+    let input = "line one\nline two\nline three\n";
+    run_test_stdin(&["-c", "-a", "NONEXISTENT"], input, "");
+}
+
+/// -a on first line: everything prints (start matches immediately).
+#[test]
+fn test_start_pattern_first_line() {
+    let input = "START now\nsecond line\nthird line\n";
+    let expected = "START now\nsecond line\nthird line";
+    run_test_stdin(&["-c", "-a", "START"], input, expected);
+}
+
+/// -b only: print everything until stop pattern matches (inclusive), then exit.
+#[test]
+fn test_stop_pattern_only() {
+    let input = "print this\nand this\nSTOP here\nshould not see\n";
+    let expected = "print this\nand this\nSTOP here";
+    run_test_stdin(&["-c", "-b", "STOP"], input, expected);
+}
+
+/// -b with no match: everything prints (nothing triggers exit).
+#[test]
+fn test_stop_pattern_no_match() {
+    let input = "line one\nline two\nline three\n";
+    let expected = "line one\nline two\nline three";
+    run_test_stdin(&["-c", "-b", "NONEXISTENT"], input, expected);
+}
+
+/// -b on first line: only first line is printed, then exit.
+#[test]
+fn test_stop_pattern_first_line() {
+    let input = "STOP immediately\nshould not see\nneither this\n";
+    let expected = "STOP immediately";
+    run_test_stdin(&["-c", "-b", "STOP"], input, expected);
+}
+
+/// -a and -b together: wait for start, print until stop (both trigger lines included).
+#[test]
+fn test_start_and_stop_patterns() {
+    let input = "skip\nSTART here\nkeep this\nSTOP here\nskip again\n";
+    let expected = "START here\nkeep this\nSTOP here";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP"], input, expected);
+}
+
+/// -a and -b with multiple cycles: prints each start-stop block.
+#[test]
+fn test_start_and_stop_multiple_cycles() {
+    let input = "skip\nSTART\nkeep1\nSTOP\nskip\nSTART\nkeep2\nSTOP\nskip\n";
+    let expected = "START\nkeep1\nSTOP\nSTART\nkeep2\nSTOP";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP"], input, expected);
+}
+
+/// -a and -b where stop appears before start: prints nothing.
+#[test]
+fn test_stop_before_start() {
+    let input = "STOP here\nSTART here\ndata\n";
+    let expected = "START here\ndata";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP"], input, expected);
+}
+
+/// -a and -b with neither pattern matching: prints nothing.
+#[test]
+fn test_start_and_stop_no_match() {
+    let input = "line one\nline two\nline three\n";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP"], input, "");
+}
+
+/// -a with case-insensitive flag -i.
+#[test]
+fn test_start_pattern_case_insensitive() {
+    let input = "skip\nstart here with lowercase\nkeep this\n";
+    let expected = "start here with lowercase\nkeep this";
+    run_test_stdin(&["-c", "-a", "START", "-i"], input, expected);
+}
+
+/// -b with case-insensitive flag -i.
+#[test]
+fn test_stop_pattern_case_insensitive() {
+    let input = "keep this\nstop here lowercase\nshould not see\n";
+    let expected = "keep this\nstop here lowercase";
+    run_test_stdin(&["-c", "-b", "STOP", "-i"], input, expected);
+}
+
+/// -a and -b combined with grep -g: start/stop controls outer print window,
+/// grep controls which lines within that window are shown.
+#[test]
+fn test_start_stop_with_grep() {
+    let input = "skip\nSTART\nINFO: normal\nERROR: boom\nINFO: ok\nSTOP\nskip\n";
+    let expected = "ERROR: boom";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-g", "ERROR"], input, expected);
+}
+
+/// -a and -b combined with vgrep -v: start/stop controls window, vgrep excludes lines.
+/// START and STOP lines themselves are not filtered by vgrep.
+#[test]
+fn test_start_stop_with_vgrep() {
+    let input = "skip\nSTART\nkeep this\nfilter this out\nkeep that\nSTOP\nskip\n";
+    let expected = "START\nkeep this\nkeep that\nSTOP";
+    run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-v", "filter"], input, expected);
+}
+
+/// -a only, combined with width -o: truncated lines after start pattern.
+#[test]
+fn test_start_pattern_with_width() {
+    let input = "skip this\nSTART\nthis is a very long line that exceeds the limit\n";
+    let expected = "START\nthis is a very lon";
+    run_test_stdin(&["-c", "-a", "START", "-o", "18"], input, expected);
+}
+
+/// -b only, combined with field removal -r.
+#[test]
+fn test_stop_pattern_with_remove() {
+    let input = "key=val keep this\nkey=val keep that\nSTOP line\nkey=val skip\n";
+    let expected = "keep this\nkeep that\nSTOP line";
+    run_test_stdin(&["-c", "-b", "STOP", "-r", "key"], input, expected);
+}
+
+/// -a with no trailing newline on last line.
+#[test]
+fn test_start_pattern_no_trailing_newline() {
+    let input = "skip\nSTART here\nlast line";
+    let expected = "START here\nlast line";
+    run_test_stdin(&["-c", "-a", "START"], input, expected);
+}
+
+/// -b with no trailing newline: stop line still printed, nothing after.
+#[test]
+fn test_stop_pattern_no_trailing_newline() {
+    let input = "keep\nSTOP here\nafter stop";
+    let expected = "keep\nSTOP here";
+    run_test_stdin(&["-c", "-b", "STOP"], input, expected);
+}

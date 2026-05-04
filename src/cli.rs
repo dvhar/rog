@@ -166,6 +166,8 @@ pub struct Opts {
     pub tailfiles: Vec<String>,
     pub tcp_clients: Option<Arc<Mutex<HashMap<i64, TcpStream>>>>,
     pub parse_headers: bool,
+    pub start_pattern: Option<String>,
+    pub stop_pattern: Option<String>,
 
 }
 impl Opts {
@@ -193,6 +195,8 @@ impl Opts {
         self.tailfiles = self.tailfiles.iter().chain(other.tailfiles.iter())
             .collect::<BTreeSet<&String>>().iter().map(|s|s.to_string()).collect();
         self.parse_headers |= other.parse_headers;
+        if self.start_pattern == None { self.start_pattern = other.start_pattern.take(); }
+        if self.stop_pattern == None { self.stop_pattern = other.stop_pattern.take(); }
     }
 
     pub fn new() -> Self {
@@ -223,6 +227,8 @@ impl Opts {
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("h", "help", "print this help menu");
         opts.optflag("H", "parse-headers", "parse tail file headers (==> file <==) in stdin/socket input");
+        opts.optopt("a", "start", "only print lines after a matching line is found", "REGEX");
+        opts.optopt("b", "stop", "stop printing (and exit if no -a) after a matching line is found", "REGEX");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
@@ -277,6 +283,8 @@ impl Opts {
             exclude: matches.opt_str("x").unwrap_or(Default::default()),
             tcp_clients: None,
             parse_headers: matches.opt_present("H"),
+            start_pattern: matches.opt_str("a"),
+            stop_pattern: matches.opt_str("b"),
 
         };
         if recurse && !matches.opt_present("P") {
