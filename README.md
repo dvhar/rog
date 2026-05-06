@@ -65,6 +65,16 @@ a = /var/log/app.log
 b = -Hk
 ```
 
+## Sudo / Doas
+
+When run under `sudo` or `doas`, rog resolves the invoking user's home directory (via `SUDO_USER` and `/etc/passwd`) so that `~/.config/rogrc` is read from your own home, not root's.
+
+For `doas` to work correctly, add the following to `/etc/doas.conf`:
+
+```
+setenv SUDO_USER $LOGIN
+```
+
 ## Build
 
 ```bash

@@ -85,8 +85,31 @@ impl<'b> Colorizer<'b> {
     }
 }
 
+/// Resolve the real invoking user's home directory.
+/// When run under sudo/doas, $HOME points to root's home, but the config
+/// lives in the original user's home. We recover it from SUDO_USER + /etc/passwd.
+fn real_home() -> String {
+    // 1. sudo may keep SUDO_HOME
+    if let Ok(h) = std::env::var("SUDO_HOME") { return h; }
+    // 2. Look up the original user from SUDO_USER in /etc/passwd
+    if let Ok(user) = std::env::var("SUDO_USER") {
+        if let Ok(contents) = std::fs::read_to_string("/etc/passwd") {
+            for line in contents.lines() {
+                let mut parts = line.splitn(7, ':');
+                if parts.next() == Some(&user) {
+                    if let Some(home_dir) = parts.nth(4) { // field 5 is home dir
+                        return home_dir.to_string();
+                    }
+                }
+            }
+        }
+    }
+    // 3. Fallback to $HOME
+    std::env::var("HOME").unwrap()
+}
+
 pub fn read_presets(swizzle: String, opts: &mut Opts) {
-    let rogrc = std::env::var("HOME").unwrap() + "/.config/rogrc";
+    let rogrc = real_home() + "/.config/rogrc";
     let rc_contents = match File::open(rogrc.clone()) {
         Ok(mut f) => {
             let mut s = String::new();

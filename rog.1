@@ -23,6 +23,9 @@ rog \- a log reader and monitoring tool
 [\fB\-x\fP \fIPATTERN\fP]
 [\fB\-p\fP \fIPRESETS\fP]
 [\fB\-P\fP]
+[\fB\-a\fP \fIPATTERN\fP]
+[\fB\-b\fP \fIPATTERN\fP]
+[\fB\-l\fP \fINUM\fP]
 [\fB\-H\fP]
 [\fB\-h\fP]
 [\fIfiles...\fP]
@@ -108,6 +111,15 @@ Load additional presets from \fI~/.config/rogrc\fP by key character.
 \fB\-P\fP, \fB\-\-nopreset\fP
 Skip loading presets from \fI~/.config/rogrc\fP.
 .TP
+\fB\-a\fP \fIPATTERN\fP, \fB\-\-start\fP=\fIPATTERN\fP
+Only print lines after a matching line is found.
+.TP
+\fB\-b\fP \fIPATTERN\fP, \fB\-\-stop\fP=\fIPATTERN\fP
+Stop printing (and exit if no \fB\-a\fP) after a matching line is found.
+.TP
+\fB\-l\fP \fINUM\fP, \fB\-\-lines\fP=\fINUM\fP
+Print \fINUM\fP more lines after stop pattern before exiting.
+.TP
 \fB\-H\fP, \fB\-\-parse\-headers\fP
 Parse tail-style file headers (\fI==> file <==\fP) in stdin or socket input.
 .TP
@@ -189,6 +201,14 @@ Remove sensitive fields while monitoring:
 .TP
 \fI~/.config/rogrc\fP
 Preset configuration file (created automatically on first run if missing).
+.SH SUDO / DOAS
+When run under \fBsudo\fP or \fBdoas\fP, rog resolves the invoking user's home
+directory (via \fBSUDO_USER\fP and \fI/etc/passwd\fP) so that \fI~/.config/rogrc\fP is
+read from your own home, not root's.
+.PP
+For \fBdoas\fP to work correctly, add the following to \fI/etc/doas.conf\fP:
+.IP
+\fBsetenv SUDO_USER $LOGIN\fP
 .SH SEE ALSO
 .BR tail (1),
 .BR grep (1),
