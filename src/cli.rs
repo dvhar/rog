@@ -263,9 +263,14 @@ impl Opts {
             let theme_list: String = THEMES.iter().enumerate()
                 .map(|(i, t)| format!("  {:2}: {}", i, t))
                 .collect::<Vec<_>>().join("\n");
-            die!("{}\n{}\n\nColor themes:\n{}", opts.usage(&args[0]),
+            let rogrc = real_home() + "/.config/rogrc";
+            let rc_contents = std::fs::read_to_string(&rogrc).unwrap_or_else(|_| {
+                format!("(no config file at {})", rogrc)
+            });
+            die!("{}\n{}\n\nColor themes:\n{}\n\nConfig file ({}):\n{}",
+                opts.usage(&args[0]),
                 "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nReads from stdin by default.",
-                theme_list);
+                theme_list, rogrc, rc_contents);
         }
         let theme = match (matches.opt_present("c"), matches.opt_str("m")) {
             (true,Some(_)) => die!("Cannot use 'c' with 'm'"),
