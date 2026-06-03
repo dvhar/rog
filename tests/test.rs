@@ -1067,7 +1067,7 @@ Jan  2 auth event here
 Jan  3 another syslog line"#;
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rog"));
-    cmd.args(&["-H"])
+    cmd.args(&["-H", "--force-color"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
     let mut child = cmd.spawn().unwrap();

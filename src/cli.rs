@@ -8,7 +8,7 @@ use {
     std::mem,
     std::{fs::File},
     regex::Regex,
-    std::io::{Read, Write},
+    std::io::{Read, Write, IsTerminal},
 };
 
 #[macro_export]
@@ -192,6 +192,7 @@ pub struct Opts {
     pub start_pattern: Option<String>,
     pub stop_pattern: Option<String>,
     pub lines: usize,
+    pub force_color: bool,
 
 }
 impl Opts {
@@ -222,6 +223,7 @@ impl Opts {
         if self.start_pattern == None { self.start_pattern = other.start_pattern.take(); }
         if self.stop_pattern == None { self.stop_pattern = other.stop_pattern.take(); }
         if self.lines == 0 { self.lines = other.lines; }
+        self.force_color |= other.force_color;
     }
 
     pub fn new() -> Self {
@@ -249,6 +251,7 @@ impl Opts {
         opts.optflag("i", "icase", "case insensitive grep");
         opts.optflag("u", "truncate", "truncate bytes that don't fit the terminal");
         opts.optflag("c", "nocolor", "No syntax highlighting");
+        opts.optflag("F", "force-color", "Force colored output even when stdout is not a TTY");
         opts.optflag("s", "server", "server mode, defaults to reading stdin");
         opts.optflag("h", "help", "print this help menu");
         opts.optflag("H", "parse-headers", "parse tail file headers (==> file <==) in stdin/socket input");
@@ -272,10 +275,11 @@ impl Opts {
                 "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nReads from stdin by default.",
                 theme_list, rogrc, rc_contents);
         }
-        let theme = match (matches.opt_present("c"), matches.opt_str("m")) {
-            (true,Some(_)) => die!("Cannot use 'c' with 'm'"),
-            (true,_) => None,
-            (false, Some(arg)) => {
+        let theme = match (matches.opt_present("c"), matches.opt_str("m"), matches.opt_present("F")) {
+            (true,Some(_),_) => die!("Cannot use 'c' with 'm'"),
+            (true,_,true) => die!("Cannot use 'c' with 'F'"),
+            (true,_,_) => None,
+            (false, Some(arg), _) => {
                 if let Ok(idx) = arg.parse::<usize>() {
                     if idx < THEMES.len() {
                         Some(THEMES[idx].to_string())
@@ -286,7 +290,15 @@ impl Opts {
                     Some(arg)
                 }
             }
-            (false, None) => Some("Visual Studio Dark+".to_string()),
+            (false, None, _) => {
+                // Default to color when stdout is a TTY, or when --force-color is set.
+                // The actual force_color flag is not yet set, so we check the matches directly.
+                if matches.opt_present("F") || std::io::stdout().is_terminal() {
+                    Some("Visual Studio Dark+".to_string())
+                } else {
+                    None
+                }
+            },
         };
         let c = matches.opt_str("C").unwrap_or("0".to_string());
         let width = if matches.opt_present("u") {
@@ -317,6 +329,7 @@ impl Opts {
             start_pattern: matches.opt_str("a"),
             stop_pattern: matches.opt_str("b"),
             lines: matches.opt_str("l").unwrap_or_else(|| "0".to_string()).parse::<usize>().unwrap_or(0),
+            force_color: matches.opt_present("F"),
 
         };
         if recurse && !matches.opt_present("P") {
