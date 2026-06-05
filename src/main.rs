@@ -1,7 +1,9 @@
 pub mod cli;
 fn main() {
     let mut opts = rog::cli::Opts::new();
-    if opts.client_mode {
+    if let Some(ref cmd) = opts.exec_cmd {
+        rog::vm_exec(cmd.clone(), &mut opts);
+    } else if opts.client_mode {
         rog::client_mode(&mut opts);
     } else if opts.server_mode {
         rog::accept_clients(&mut opts);

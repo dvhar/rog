@@ -9,6 +9,8 @@ use {
     std::net::{TcpListener, TcpStream},
     std::{fs, fs::File},
     std::path::PathBuf,
+    std::process::ChildStdout,
+    std::os::unix::process::CommandExt,
     regex::{Regex, RegexBuilder},
 
     notify::{Event, Error, RecommendedWatcher, RecursiveMode, Watcher, event::{ModifyKind, DataChange}, EventKind::Modify},
@@ -139,6 +141,7 @@ pub enum Op {
     Truncate,
     ServerWrite,
     ReadSocket(TcpStream),
+    ReadCmd(ChildStdout),
     ParseHeader(usize),
     StartAwait(Regex, i64),
     StopCheck(Regex),
@@ -171,6 +174,7 @@ impl Clone for Op {
             Op::Truncate => Op::Truncate,
             Op::ServerWrite => Op::ServerWrite,
             Op::ReadSocket(_) => unreachable!("ReadSocket should never be cloned"),
+            Op::ReadCmd(_) => unreachable!("ReadCmd should never be cloned"),
             Op::ParseHeader(v) => Op::ParseHeader(*v),
             Op::StartAwait(re, ip) => Op::StartAwait(re.clone(), *ip),
             Op::StopCheck(re) => Op::StopCheck(re.clone()),
@@ -304,6 +308,18 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     }
                     Err(e) => {
                         eprintln!("socket read error:{}", e);
+                        return;
+                    }
+                }
+                rb.clear();
+            }
+            Op::ReadCmd(ref mut stdout) => {
+                bx = 0;
+                match stdout.read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) => {
+                        eprintln!("command read error:{}", e);
                         return;
                     }
                 }
@@ -806,4 +822,41 @@ pub fn client_mode(opts: &mut Opts) {
     };
     let ops = build_ops(Op::ReadSocket(stream), opts, false);
     runvm(ops, HashMap::new(), opts);
+}
+
+/// Spawn a shell command, read its stdout, and process it through the VM.
+/// Child runs in its own process group so we can kill all descendants on exit.
+pub fn vm_exec(cmd: String, opts: &mut Opts) {
+    let mut child = match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .process_group(0) // child becomes leader of its own process group
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => die!("Error spawning command '{}':{}", cmd, e),
+    };
+    let stdout = child.stdout.take().expect("should have stdout");
+
+    // Register ctrlc handler to kill child process group on SIGINT
+    let pgid = child.id() as i32;
+    ctrlc::set_handler(move || {
+        let _ = unsafe { killpg(pgid, 9) };
+        std::process::exit(0);
+    }).expect("Error setting Ctrl-C handler");
+
+    let ops = build_ops(Op::ReadCmd(stdout), opts, false);
+    runvm(ops, HashMap::new(), opts);
+    // Kill entire process group (child + any background processes) on normal exit
+    if child.try_wait().unwrap().is_none() {
+        let _ = unsafe { killpg(child.id() as i32, 9) }; // SIGKILL
+    }
+    let _ = child.wait();
+}
+
+#[link(name = "c")]
+extern "C" {
+    fn killpg(pgid: i32, sig: i32) -> i32;
 }

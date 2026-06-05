@@ -193,6 +193,7 @@ pub struct Opts {
     pub stop_pattern: Option<String>,
     pub lines: usize,
     pub force_color: bool,
+    pub exec_cmd: Option<String>,
 
 }
 impl Opts {
@@ -224,6 +225,7 @@ impl Opts {
         if self.stop_pattern == None { self.stop_pattern = other.stop_pattern.take(); }
         if self.lines == 0 { self.lines = other.lines; }
         self.force_color |= other.force_color;
+        if self.exec_cmd == None { self.exec_cmd = other.exec_cmd.take(); }
     }
 
     pub fn new() -> Self {
@@ -258,6 +260,7 @@ impl Opts {
         opts.optopt("a", "start", "only print lines after a matching line is found", "REGEX");
         opts.optopt("b", "stop", "stop printing (and exit if no -a) after a matching line is found", "REGEX");
         opts.optopt("l", "lines", "print N more lines after stop pattern before exiting", "NUM");
+        opts.optopt("e", "exec", "run a shell command and read its stdout as input", "CMD");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
@@ -330,6 +333,7 @@ impl Opts {
             stop_pattern: matches.opt_str("b"),
             lines: matches.opt_str("l").unwrap_or_else(|| "0".to_string()).parse::<usize>().unwrap_or(0),
             force_color: matches.opt_present("F"),
+            exec_cmd: matches.opt_str("e"),
 
         };
         if recurse && !matches.opt_present("P") {

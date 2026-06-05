@@ -1465,3 +1465,258 @@ fn test_start_stop_with_lines_ends_without_resume() {
     let expected = "START start\nmiddle\nSTOP end\nafter1\nafter2";
     run_test_stdin(&["-c", "-a", "START", "-b", "STOP", "-l", "2"], input, expected);
 }
+
+// ─── Exec (-e) Tests ───────────────────────────────────────────────────────
+
+fn run_test_exec(args: &[&str], cmd: &str, expected_output: &str) {
+    let exp = expected_output.trim();
+    let mut child_cmd = Command::new(env!("CARGO_BIN_EXE_rog"));
+    child_cmd.args(args).arg("-e").arg(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = child_cmd.spawn().unwrap().wait_with_output().unwrap();
+    assert!(output.status.success(), "rog failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let trimmed_output = stdout.trim();
+    if exp != trimmed_output {
+        eprintln!("Expected:\n{}\n\nGot:\n{}", exp, trimmed_output);
+        panic!("test failed");
+    }
+}
+
+/// -e basic: echo three lines, all printed.
+#[test]
+fn test_exec_basic() {
+    run_test_exec(&["-c"], "echo -e 'line1\nline2\nline3'", "line1\nline2\nline3");
+}
+
+/// -e with grep: only matching lines from the command output are printed.
+#[test]
+fn test_exec_with_grep() {
+    run_test_exec(
+        &["-c", "-g", "error"],
+        "echo -e 'info ok\nerror boom\ninfo still ok'",
+        "error boom",
+    );
+}
+
+/// -e with vgrep: filter out lines matching the pattern.
+#[test]
+fn test_exec_with_vgrep() {
+    run_test_exec(
+        &["-c", "-v", "SKIP"],
+        "echo -e 'keep this\nSKIP this\nkeep that'",
+        "keep this\nkeep that",
+    );
+}
+
+/// -e with width truncation.
+#[test]
+fn test_exec_with_width() {
+    run_test_exec(
+        &["-c", "-o", "5"],
+        "echo 'this is a long line'",
+        "this ",
+    );
+}
+
+/// -e with start pattern: skip lines until pattern matches.
+#[test]
+fn test_exec_with_start_pattern() {
+    run_test_exec(
+        &["-c", "-a", "START"],
+        "echo -e 'skip me\nSTART here\nkeep this'",
+        "START here\nkeep this",
+    );
+}
+
+/// -e with stop pattern: stop printing after pattern matches.
+#[test]
+fn test_exec_with_stop_pattern() {
+    run_test_exec(
+        &["-c", "-b", "STOP"],
+        "echo -e 'keep this\nSTOP here\nskip this'",
+        "keep this\nSTOP here",
+    );
+}
+
+/// -e with field removal.
+#[test]
+fn test_exec_with_remove() {
+    run_test_exec(
+        &["-c", "-r", "level"],
+        "echo -e 'level=warn first line\nlevel=error second line'",
+        "first line\nsecond line",
+    );
+}
+
+/// -e with a command that produces no output.
+#[test]
+fn test_exec_empty_output() {
+    run_test_exec(&["-c"], "true", "");
+}
+
+/// -e with case-insensitive grep.
+#[test]
+fn test_exec_grep_case_insensitive() {
+    run_test_exec(
+        &["-c", "-g", "ERROR", "-i"],
+        "echo -e 'all good\nerror occurred\nalso fine'",
+        "error occurred",
+    );
+}
+
+/// -e with grep and context (-B).
+#[test]
+fn test_exec_grep_bctx() {
+    run_test_exec(
+        &["-c", "-g", "target", "-B1"],
+        "echo -e 'before\nthis is the target line\nafter'",
+        "before\nthis is the target line",
+    );
+}
+
+/// -e with grep and after context (-A).
+#[test]
+fn test_exec_grep_actx() {
+    run_test_exec(
+        &["-c", "-g", "target", "-A1"],
+        "echo -e 'before\nthis is the target line\nafter'",
+        "this is the target line\nafter",
+    );
+}
+
+/// -e with word-boundary grep (-w).
+#[test]
+fn test_exec_wgrep() {
+    run_test_exec(
+        &["-c", "-w", "log"],
+        "echo -e 'log entry\nlogging verb\nmy log file'",
+        "log entry\nmy log file",
+    );
+}
+
+/// -e combined with stop pattern and -l: stop line plus extra lines.
+#[test]
+fn test_exec_stop_with_lines() {
+    run_test_exec(
+        &["-c", "-b", "STOP", "-l", "1"],
+        "echo -e 'line1\nSTOP here\nextra\nignored'",
+        "line1\nSTOP here\nextra",
+    );
+}
+
+/// -e with start and stop patterns combined.
+#[test]
+fn test_exec_start_and_stop() {
+    run_test_exec(
+        &["-c", "-a", "START", "-b", "STOP"],
+        "echo -e 'before\nSTART\nkeep\nSTOP\nafter'",
+        "START\nkeep\nSTOP",
+    );
+}
+
+/// -e reads from a command, not stdin (stdin should be ignored).
+#[test]
+fn test_exec_ignores_stdin() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rog"));
+    cmd.args(&["-c", "-e", "echo from_exec"]
+        ).stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    // Write to stdin — should be ignored since -e is set
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(b"from_stdin\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.trim() == "from_exec",
+        "expected 'from_exec', got: {}",
+        stdout.trim()
+    );
+}
+
+/// -e with stop pattern kills the child's entire process group.
+/// Background processes spawned by the exec command must not survive as orphans.
+#[test]
+fn test_exec_stop_kills_process_group() {
+    let marker = format!("/tmp/rog_pg_marker_{}_{}", std::process::id(), std::time::SystemTime::now().elapsed().unwrap().as_millis());
+
+    // Command: print a stop line, then background a long-running process
+    // that writes to a marker file every second. If the process survives,
+    // the marker file will be touched.
+    let cmd = format!("echo STOP; (while true; do touch {}; sleep 1; done) &", marker);
+
+    let _ = std::fs::remove_file(&marker); // ensure clean start
+    assert!(!std::path::Path::new(&marker).exists());
+
+    let mut cmd_child = Command::new(env!("CARGO_BIN_EXE_rog"));
+    cmd_child.args(&["-c", "-b", "STOP", "-e", &cmd])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = cmd_child.spawn().unwrap().wait_with_output().unwrap();
+    assert!(output.status.success(), "rog failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Give the orphaned background process time to write if it were still alive
+    thread::sleep(Duration::from_millis(2000));
+
+    // The marker file should NOT exist — the process group was killed
+    assert!(
+        !std::path::Path::new(&marker).exists(),
+        "marker file exists — background process was not killed (process group cleanup failed)"
+    );
+}
+
+/// Ctrl-C kills the child's entire process group.
+/// Background processes spawned by the exec command must not survive as orphans
+/// when rog receives SIGINT.
+#[test]
+fn test_exec_ctrlc_kills_process_group() {
+    let marker = format!("/tmp/rog_ctrlc_marker_{}_{}", std::process::id(), std::time::SystemTime::now().elapsed().unwrap().as_millis());
+
+    // Command: prints two lines then backgrounds a loop that touches a marker file
+    let cmd = format!("echo line1; echo line2; (while true; do touch {}; sleep 1; done) &", marker);
+
+    let _ = std::fs::remove_file(&marker);
+
+    let mut cmd_child = Command::new(env!("CARGO_BIN_EXE_rog"));
+    cmd_child.args(&["-c", "-e", &cmd])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = cmd_child.spawn().unwrap();
+
+    // Give the child time to start and background the loop
+    thread::sleep(Duration::from_millis(1000));
+
+    // Verify the background process is running (marker should exist)
+    assert!(
+        std::path::Path::new(&marker).exists(),
+        "background process should be running (marker not found)"
+    );
+    let _ = std::fs::remove_file(&marker); // reset marker
+
+    // Send SIGINT
+    let kill_result = Command::new("kill")
+        .args(&["-INT", &child.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(kill_result.status.success(), "kill -INT failed");
+
+    // Wait for rog to exit
+    let _output = child.wait_with_output().unwrap();
+
+    // Give the orphaned background process time to write if it were still alive
+    thread::sleep(Duration::from_millis(2000));
+
+    // The marker file should NOT exist — the process group was killed by ctrlc handler
+    assert!(
+        !std::path::Path::new(&marker).exists(),
+        "marker file exists after SIGINT — process group was not killed"
+    );
+}
+
