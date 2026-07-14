@@ -1,6 +1,6 @@
 # rog
 
-Halfway between `tail -f` and `lnav`. A log reader for filtering, monitoring, and serving log data.
+A log reader for filtering, monitoring, and serving log data. Somewhere between tail -f and lnav.
 
 ## Modes
 
@@ -19,6 +19,7 @@ Halfway between `tail -f` and `lnav`. A log reader for filtering, monitoring, an
 
 ## Formatting
 
+- `-z NUM` — Print a spacer line with an incrementing counter after `NUM` seconds of no output
 - `-r F1,F2,...` — Remove fields matching `key=value` from output
 - `-m THEME` — Syntax highlighting theme (13 themes available; use `-c` to disable)
 - `-u` — Truncate lines to terminal width

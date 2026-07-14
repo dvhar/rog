@@ -20,6 +20,7 @@ rog \- a log reader and monitoring tool
 [\fB\-c\fP]
 [\fB\-u\fP]
 [\fB\-o\fP \fINUM\fP]
+[\fB\-z\fP \fISECONDS\fP]
 [\fB\-x\fP \fIPATTERN\fP]
 [\fB\-p\fP \fIPRESETS\fP]
 [\fB\-P\fP]
@@ -101,6 +102,11 @@ Truncate lines that exceed terminal width.
 .TP
 \fB\-o\fP \fINUM\fP, \fB\-\-width\fP=\fINUM\fP
 Limit output to \fINUM\fP bytes per line.
+.TP
+\fB\-z\fP \fISECONDS\fP, \fB\-\-spacer\fP=\fISECONDS\fP
+Print a terminal-width spacer line with an incrementing counter after
+\fISECONDS\fP seconds of no output. Useful for monitoring slow or sporadic
+terminal feeds.
 .TP
 \fB\-x\fP \fIPATTERN\fP, \fB\-\-exclude\fP=\fIPATTERN\fP
 Exclude files whose names match the given regex pattern.
