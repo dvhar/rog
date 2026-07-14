@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 getopts = "0.2"
+libc = "0.2"
 unix-named-pipe = "0.2.0"
 ctrlc = { version = "3.4.2", features = ["termination"] }
 bat = "0.24.0"
