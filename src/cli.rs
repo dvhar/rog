@@ -196,7 +196,7 @@ pub struct Opts {
     pub exec_cmd: Option<String>,
     pub spacer: bool,
     pub spacer_duration: u64,
-    pub spacer_line: String,
+    pub spacer_counter: u64,
 
 }
 impl Opts {
@@ -231,9 +231,7 @@ impl Opts {
         if self.exec_cmd == None { self.exec_cmd = other.exec_cmd.take(); }
         self.spacer = self.spacer || other.spacer;
         if self.spacer_duration == 0 { self.spacer_duration = other.spacer_duration; }
-        if self.spacer_line.is_empty() && !other.spacer_line.is_empty() {
-            self.spacer_line = mem::take(&mut other.spacer_line);
-        }
+        if self.spacer_counter == 0 { self.spacer_counter = other.spacer_counter; }
     }
 
     pub fn new() -> Self {
@@ -269,7 +267,7 @@ impl Opts {
         opts.optopt("b", "stop", "stop printing (and exit if no -a) after a matching line is found", "REGEX");
         opts.optopt("l", "lines", "print N more lines after stop pattern before exiting", "NUM");
         opts.optopt("e", "exec", "run a shell command and read its stdout as input", "CMD");
-        opts.optopt("z", "spacer", "print a spacer line after N seconds of no output (default: 2s, sep: ---)", "NUM[SEP]");
+        opts.optopt("z", "spacer", "print a spacer line (terminal width) after N seconds of no output (default: 2s)", "NUM");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
@@ -345,15 +343,11 @@ impl Opts {
             exec_cmd: matches.opt_str("e"),
             spacer: matches.opt_present("z"),
             spacer_duration: 0,
-            spacer_line: String::from("---"),
+            spacer_counter: 0,
         };
         if opts.spacer {
             let raw = matches.opt_str("z").unwrap_or("2".to_string());
-            let parts: Vec<&str> = raw.splitn(2, ':').collect();
-            opts.spacer_duration = parts[0].parse().unwrap_or(2);
-            if parts.len() > 1 && !parts[1].is_empty() {
-                opts.spacer_line = parts[1].to_string();
-            }
+            opts.spacer_duration = raw.parse().unwrap_or(2);
         }
         if recurse && !matches.opt_present("P") {
             read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);
