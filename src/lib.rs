@@ -39,9 +39,8 @@ fn spacer_line(width: usize, n: u64) -> String {
     line
 }
 
-/// Get the terminal width for spacers — uses opts.width if set, otherwise TTY cols.
-fn spacer_width(opts: &Opts) -> usize {
-    if opts.width > 0 { return opts.width; }
+/// Get the terminal width for spacers — always queries the current TTY size.
+fn spacer_width() -> usize {
     termsize::get().map(|t| t.cols as usize).unwrap_or(80)
 }
 
@@ -353,7 +352,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     // Spacer-timer: we'll create the timer thread fresh for each read cycle.
     // The SelectiveReader::select_read handles the select() multiplexing.
     
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut paths: Vec<std::path::PathBuf>;
     let mut files = tailfiles;
     let mut current_filename = String::new();
     let mut prevfidx = 9999;
@@ -388,7 +387,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                         ReadResult::Data(n) => { readbytes = n; }
                         ReadResult::Spacer => {
                             // Print spacer immediately — skip VM pipeline
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                             continue;
                         }
                         ReadResult::End => return,
@@ -408,7 +407,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                 match SelectiveReader::new(input_fd).select_read(&mut buf, opts.spacer && opts.spacer_duration > 0, opts.spacer_duration, false) {
                     ReadResult::Data(n) => { readbytes = n; }
                     ReadResult::Spacer => {
-                        io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                        io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                         continue;
                     }
                     ReadResult::End => return,
@@ -433,7 +432,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     match SelectiveReader::new(fifo_fd).select_read(&mut buf, true, opts.spacer_duration, true) {
                         ReadResult::Data(n) => { readbytes = n; }
                         ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                             continue;
                         }
                         ReadResult::End => {
@@ -482,7 +481,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                                 spacer_fired_since_output = true;  // suppress further spacers until data arrives
                                 continue;
                             }
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                             spacer_fired_since_output = true;
                             continue;
                         }
@@ -527,7 +526,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                                     continue;
                                 }
                                 ReadResult::Spacer => {
-                                    io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                                    io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                                     continue;
                                 }
                                 ReadResult::End => continue,
@@ -555,7 +554,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     match SelectiveReader::new(sock_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
                         ReadResult::Data(n) => { readbytes = n; }
                         ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                             continue;
                         }
                         ReadResult::End => return,
@@ -580,7 +579,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     match SelectiveReader::new(cmd_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
                         ReadResult::Data(n) => { readbytes = n; }
                         ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(&opts), c + 1) }).as_bytes()).unwrap();
+                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
                             continue;
                         }
                         ReadResult::End => return,
