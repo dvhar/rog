@@ -20,7 +20,6 @@ rog \- a log reader and monitoring tool
 [\fB\-c\fP]
 [\fB\-u\fP]
 [\fB\-o\fP \fINUM\fP]
-[\fB\-z\fP \fISECONDS\fP]
 [\fB\-x\fP \fIPATTERN\fP]
 [\fB\-p\fP \fIPRESETS\fP]
 [\fB\-P\fP]
@@ -28,6 +27,8 @@ rog \- a log reader and monitoring tool
 [\fB\-b\fP \fIPATTERN\fP]
 [\fB\-l\fP \fINUM\fP]
 [\fB\-H\fP]
+[\fB\-S\fP]
+[\fB\-t\fP \fISEC\fP]
 [\fB\-h\fP]
 [\fIfiles...\fP]
 .SH DESCRIPTION
@@ -103,11 +104,6 @@ Truncate lines that exceed terminal width.
 \fB\-o\fP \fINUM\fP, \fB\-\-width\fP=\fINUM\fP
 Limit output to \fINUM\fP bytes per line.
 .TP
-\fB\-z\fP \fISECONDS\fP, \fB\-\-spacer\fP=\fISECONDS\fP
-Print a terminal-width spacer line with an incrementing counter after
-\fISECONDS\fP seconds of no output. Useful for monitoring slow or sporadic
-terminal feeds.
-.TP
 \fB\-x\fP \fIPATTERN\fP, \fB\-\-exclude\fP=\fIPATTERN\fP
 Exclude files whose names match the given regex pattern.
 .TP
@@ -128,6 +124,16 @@ Print \fINUM\fP more lines after stop pattern before exiting.
 .TP
 \fB\-H\fP, \fB\-\-parse\-headers\fP
 Parse tail-style file headers (\fI==> file <==\fP) in stdin or socket input.
+.TP
+\fB\-S\fP, \fB\-\-spacer\fP
+Print a spacer line (dashes with the time of the last printed line) once
+output has been idle for \fISEC\fP seconds (see \fB\-t\fP). The spacer is
+printed the moment the idle threshold is crossed, not when the next line
+arrives. Not used in server mode (spacer lines are not sent to sockets).
+.TP
+\fB\-t\fP \fISEC\fP, \fB\-\-spacer\-sec\fP=\fISEC\fP
+Seconds of idle output before a spacer prints. Implies \fB\-S\fP
+(default: 1).
 .TP
 \fB\-h\fP, \fB\-\-help\fP
 Print the help menu and list of available color themes.

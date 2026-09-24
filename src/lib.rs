@@ -2,11 +2,12 @@ use {
     std::collections::HashMap,
     std::cell::RefCell,
     std::io::{self, Read, Write, SeekFrom, Seek, IsTerminal},
-    std::os::fd::AsRawFd,
     ansi_term::Colour::Red,
     std::mem,
     std::sync::mpsc::Receiver,
     std::sync::{Arc, Mutex},
+    std::sync::atomic::{AtomicBool, Ordering},
+    std::time::{Duration, SystemTime, UNIX_EPOCH},
     std::net::{TcpListener, TcpStream},
     std::{fs, fs::File},
     std::path::PathBuf,
@@ -20,151 +21,6 @@ use {
 };
 pub mod cli;
 use cli::{Opts,Colorizer};
-
-/// Generate a spacer line of the given width using box-drawing characters.
-/// Generate a spacer line of the given width with a centered counter.
-fn spacer_line(width: usize, n: u64) -> String {
-    if width == 0 { return format!("--- {} ---", n); }
-    // Build terminal-width spacer with centered counter.
-    // Center area: "┈ <N> ┈" (len(N)+3 chars)
-    let center = format!("┈ {} ┈", n);
-    let center_chars = center.chars().count();
-    let left_len = (width - center_chars) / 2;
-    let right_len = width - center_chars - left_len;
-    
-    let mut line = String::with_capacity(width * 3); // UTF-8 may be wider
-    for _ in 0..left_len { line.push('─'); }
-    line.push_str(&center);
-    for _ in 0..right_len { line.push('─'); }
-    line
-}
-
-/// Get the terminal width for spacers — always queries the current TTY size.
-fn spacer_width() -> usize {
-    termsize::get().map(|t| t.cols as usize).unwrap_or(80)
-}
-
-/// Result of a multiplexed select-based read.
-pub enum ReadResult {
-    /// Real data arrived, `bytes` contains the length
-    Data(usize),
-    /// Spacer timer expired — print spacer and restart read
-    Spacer,
-    /// EOF or error on input source
-    End,
-}
-
-/// Block on an mpsc receiver with a spacer-timer timeout using polling.
-/// Returns `Some(value)` if data arrived from the channel,
-/// or `None` if the spacer timer fired first.
-pub fn recv_with_spacer<T>(rx: &Receiver<T>, spacer_duration_secs: u64) -> Option<T> {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(spacer_duration_secs);
-    let poll_interval: i32 = 50; // poll every 50ms
-    
-    loop {
-        // Check if spacer timer has expired
-        if start.elapsed() >= timeout {
-            return None;
-        }
-        
-        // Try to receive from the channel (non-blocking)
-        match rx.try_recv() {
-            Ok(v) => return Some(v),
-            Err(_) => {}
-        }
-        
-        // Sleep briefly before retrying
-        std::thread::sleep(std::time::Duration::from_millis(poll_interval as u64));
-    }
-}
-
-/// Wrapper around a blocking read that can be multiplexed with a spacer-timer.
-/// Uses poll() with timeout to wait on the input fd, waking up periodically
-/// to check if the spacer timer has expired.
-pub struct SelectiveReader {
-    pub fd: libc::c_int,
-}
-
-impl SelectiveReader {
-    pub fn new(fd: libc::c_int) -> Self {
-        Self { fd }
-    }
-    
-    /// Perform a multiplexed read using poll() with timeout.
-    /// Polls the input fd in short intervals, checking each time if spacer_duration has elapsed.
-    /// If `reopenable` is true and read returns 0 (EOF), keeps polling instead of returning End.
-    pub fn select_read(
-        &self,
-        buf: &mut [u8; BUFSZ],
-        spacer_enabled: bool,
-        spacer_duration_secs: u64,
-        reopenable: bool,
-    ) -> ReadResult {
-        if !spacer_enabled || spacer_duration_secs == 0 {
-            let n = unsafe {
-                libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-            };
-            if n > 0 { return ReadResult::Data(n as usize); }
-            return ReadResult::End;
-        }
-        
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(spacer_duration_secs);
-        let poll_interval: i32 = 50;
-        
-        loop {
-            // Check if spacer timer has expired
-            if start.elapsed() >= timeout {
-                return ReadResult::Spacer;
-            }
-            
-            // poll for input with short timeout
-            let mut fds: libc::pollfd = libc::pollfd {
-                fd: self.fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            
-            let remaining_ms = timeout.saturating_sub(start.elapsed()).as_millis() as i32;
-            let timeout_ms = if remaining_ms < poll_interval { remaining_ms } else { poll_interval };
-            
-            let rc = unsafe { libc::poll(&mut fds, 1, timeout_ms) };
-            
-            if rc < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted { continue; }
-                return ReadResult::End;
-            }
-            
-            if rc > 0 && (fds.revents & libc::POLLIN) != 0 {
-                let n = unsafe {
-                    libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-                };
-                if n > 0 { return ReadResult::Data(n as usize); }
-                // EOF: for reopenable fds (FIFOs), keep polling; otherwise return End
-                if n == 0 {
-                    if reopenable { continue; }
-                    return ReadResult::End;
-                }
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted { continue; }
-                return ReadResult::End;
-            }
-            
-            // POLLHUP/POLLERR without POLLIN
-            if (fds.revents & (libc::POLLHUP | libc::POLLERR)) != 0 {
-                let n = unsafe {
-                    libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-                };
-                if n > 0 { return ReadResult::Data(n as usize); }
-                // For reopenable fds with POLLHUP (e.g. writer disconnected), keep polling
-                if reopenable && n == 0 { continue; }
-                return ReadResult::End;
-            }
-        }
-    }
-}
 
 #[macro_export]
 macro_rules! dbug {
@@ -187,6 +43,91 @@ macro_rules! dbug_ops {
             }
         }
     }
+}
+
+/// Background-thread spacer: prints a spacer line once output has been idle
+/// for the configured number of seconds. Call `bump()` every time a line is
+/// actually printed; the thread then prints the spacer the moment the idle
+/// threshold is crossed, rather than waiting for the next line to be printed.
+pub struct Spacer {
+    last: Arc<Mutex<SystemTime>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+impl Spacer {
+    pub fn start(after_secs: f64, color: bool) -> Self {
+        let last = Arc::new(Mutex::new(SystemTime::now()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let last2 = Arc::clone(&last);
+        let stop2 = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let after = Duration::from_secs_f64(after_secs.max(0.1));
+            let mut printed_at: Option<SystemTime> = None;
+            loop {
+                if stop2.load(Ordering::Relaxed) { break; }
+                std::thread::sleep(Duration::from_millis(20));
+                let last = *last2.lock().unwrap();
+                if printed_at != Some(last) {
+                    printed_at = None; // new output since the last spacer
+                }
+                if printed_at.is_none()
+                    && SystemTime::now().duration_since(last).unwrap_or(Duration::ZERO) >= after
+                {
+                    let _ = print_spacer_line(last, color);
+                    printed_at = Some(last);
+                }
+            }
+        });
+        Self { last, stop, handle: Some(handle) }
+    }
+    /// Record that output was just printed (resets the idle timer).
+    pub fn bump(&self) {
+        *self.last.lock().unwrap() = SystemTime::now();
+    }
+}
+impl Drop for Spacer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// A spacer line: dashes centered around the local time of the last printed
+/// line, e.g. `──────── 12:34:56 ────────`.
+fn print_spacer_line(last: SystemTime, color: bool) -> io::Result<()> {
+    let width = termsize::get().map(|t| t.cols as usize).unwrap_or(80);
+    let stamp = local_hms(last);
+    let left = width.saturating_sub(stamp.len() + 2) / 2;
+    let right = width.saturating_sub(stamp.len() + 2 + left);
+    let line = format!("{} {} {}", "─".repeat(left), stamp, "─".repeat(right));
+    let line = if color {
+        ansi_term::Colour::Fixed(245).paint(&line).to_string()
+    } else {
+        line
+    };
+    io::stdout().write_all(format!("{}\n", line).as_bytes())
+}
+
+/// Format `t` as "HH:MM:SS" local time via libc's `localtime_r`, so no
+/// external time crate is needed (rog already links libc for `killpg`).
+/// Falls back to UTC if `localtime_r` fails (e.g. pre-epoch timestamps).
+fn local_hms(t: SystemTime) -> String {
+    let secs = match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => 0,
+    };
+    let mut buf = [0u8; 128]; // struct tm incl. glibc's extra fields (tm_gmtoff, tm_zone)
+    unsafe {
+        let p = localtime_r(&secs, buf.as_mut_ptr());
+        if !p.is_null() {
+            let w = |i: usize| i32::from_ne_bytes(buf[i*4..i*4+4].try_into().unwrap());
+            return format!("{:02}:{:02}:{:02}", w(2), w(1), w(0));
+        }
+    }
+    let tod = (secs.rem_euclid(86400)).max(0);
+    format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
 }
 
 pub const BUFSZ: usize = 1024*1024;
@@ -293,7 +234,6 @@ pub enum Op {
     StopCheck(Regex),
     PrintGate(i64),
     ExitVm,
-    ReadWithTimeout(Receiver<()>, libc::c_int),
 }
 impl Clone for Op {
     fn clone(&self) -> Self {
@@ -327,7 +267,6 @@ impl Clone for Op {
             Op::StopCheck(re) => Op::StopCheck(re.clone()),
             Op::PrintGate(s) => Op::PrintGate(*s),
             Op::ExitVm => Op::ExitVm,
-            Op::ReadWithTimeout(_, _) => unreachable!("ReadWithTimeout should never be cloned"),
         }
     }
 }
@@ -346,13 +285,7 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
     let mut bx_store = 0;
     let mut readbytes = 0;
     let mut buf = [0; BUFSZ];
-    let mut spacer_fired_since_output = false;
-    let mut spacer_started = false;  // no spacer until at least one data line printed
-    
-    // Spacer-timer: we'll create the timer thread fresh for each read cycle.
-    // The SelectiveReader::select_read handles the select() multiplexing.
-    
-    let mut paths: Vec<std::path::PathBuf>;
+    let mut paths: Vec<_> = Vec::new();
     let mut files = tailfiles;
     let mut current_filename = String::new();
     let mut prevfidx = 9999;
@@ -372,6 +305,15 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
         Some(theme) => Some(RefCell::new(Colorizer::new(mem::take(theme)))),
         None => None,
     };
+    // spacer: prints a line the moment output has been idle long enough.
+    // Not used in server mode (spacer lines aren't sent to sockets).
+    let spacer = if opts.spacer && !opts.server_mode {
+        let secs = if opts.spacer_sec > 0.0 { opts.spacer_sec } else { 1.0 };
+        let spacer_color = io::stdout().is_terminal() && opts.theme.is_some();
+        Some(Spacer::start(secs, spacer_color))
+    } else {
+        None
+    };
     loop {
         //dbug!("     OP:{:?}", ops[i]);
         match ops[i] {
@@ -381,36 +323,10 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
             },
             Op::ReadStdin => {
                 bx = 0;
-                let stdin_fd = io::stdin().as_raw_fd();
-                if opts.spacer && opts.spacer_duration > 0 {
-                    match SelectiveReader::new(stdin_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
-                        ReadResult::Data(n) => { readbytes = n; }
-                        ReadResult::Spacer => {
-                            // Print spacer immediately — skip VM pipeline
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                            continue;
-                        }
-                        ReadResult::End => return,
-                    }
-                } else {
-                    match io::stdin().read(&mut buf) {
-                        Ok(n) if n > 0 => { readbytes = n; }
-                        Ok(_) => return,
-                        Err(e) => { eprintln!("read err:{}",e); return; }
-                    }
-                }
-                rb.clear();
-            },
-            Op::ReadWithTimeout(ref _rx, input_fd) => {
-                bx = 0;
-                // Fallback: use SelectiveReader with the given fd
-                match SelectiveReader::new(input_fd).select_read(&mut buf, opts.spacer && opts.spacer_duration > 0, opts.spacer_duration, false) {
-                    ReadResult::Data(n) => { readbytes = n; }
-                    ReadResult::Spacer => {
-                        io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                        continue;
-                    }
-                    ReadResult::End => return,
+                match io::stdin().read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) => eprintln!("read err:{}",e),
                 }
                 rb.clear();
             },
@@ -427,168 +343,80 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                         }
                     }
                 }
-                let fifo_fd = fifo_file.as_mut().unwrap().as_raw_fd();
-                if opts.spacer && opts.spacer_duration > 0 {
-                    match SelectiveReader::new(fifo_fd).select_read(&mut buf, true, opts.spacer_duration, true) {
-                        ReadResult::Data(n) => { readbytes = n; }
-                        ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                            continue;
-                        }
-                        ReadResult::End => {
-                            fifo_file = None;
-                            continue;
-                        }
-                    }
-                } else {
-                    match fifo_file.as_mut().unwrap().read(&mut buf) {
-                        Ok(n) if n > 0 => { readbytes = n; }
-                        Ok(_) => {
-                            fifo_file = None;
-                            continue;
-                        },
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            continue;
-                        },
-                        Err(e) => {
-                            eprintln!("fifo read error:{}; reopening...", e);
-                            fifo_file = None;
-                            continue;
-                        }
+                // Read from the fifo
+                match fifo_file.as_mut().unwrap().read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        readbytes = n;
+                        rb.clear();
+                    },
+                    Ok(_) => {
+                        // EOF: all writers closed. Drop the handle so we re-open next iteration.
+                        fifo_file = None;
+                        continue;
+                    },
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        // Non-blocking: no data available yet. Sleep briefly and retry.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    },
+                    Err(e) => {
+                        eprintln!("fifo read error:{}; reopening...", e);
+                        fifo_file = None;
+                        continue;
                     }
                 }
-                rb.clear();
             },
             Op::ReadNextFile(ref rx) => {
                 bx = 0;
-                if opts.spacer && opts.spacer_duration > 0 {
-                    // Wait for file event or spacer timeout, multiplexed via select
-                    match recv_with_spacer(rx, opts.spacer_duration) {
-                        Some(ev) => {
-                            match ev {
-                                Ok(ev) if ev.kind == Modify(ModifyKind::Data(DataChange::Any)) => {
-                                    paths = ev.paths;
-                                },
-                                Ok(_) => { continue; },
-                                Err(er) => { eprintln!("EV Error:{}", er); continue; },
-                            }
-                        }
-                        None if !spacer_started || !spacer_fired_since_output => {
-                            if !spacer_started {
-                                // First timeout — no spacer before any data
-                                spacer_started = true;
-                                spacer_fired_since_output = true;  // suppress further spacers until data arrives
-                                continue;
-                            }
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                            spacer_fired_since_output = true;
-                            continue;
-                        }
-                        None => {
-                            // Already printed spacer this cycle — just keep waiting for data
-                            match rx.try_recv() {
-                                Ok(ev) => {
-                                    match ev {
-                                        Ok(ev) if ev.kind == Modify(ModifyKind::Data(DataChange::Any)) => {
-                                            paths = ev.paths;
-                                        },
-                                        Ok(_) | Err(_) => { continue; },
-                                    }
-                                }
-                                Err(_) => { continue; }
-                            }
-                        }
-                    }
-                } else {
+                if paths.len() == 0 {
                     let rev = rx.recv().unwrap();
                     match rev {
                         Ok(ev) if ev.kind == Modify(ModifyKind::Data(DataChange::Any)) => {
                             paths = ev.paths;
                         },
                         Ok(_) => { continue; },
-                        Err(er) => { eprintln!("EV Error:{}", er); continue; },
+                        Err(er) => eprintln!("EV Error:{}", er),
                     }
                 }
-                
                 if let Some(path) = paths.pop() {
                     if let Some(fi) = files.get_mut(&path) {
                         current_filename = fi.rawname.clone();
                         fidx = fi.idx;
                         fi.updatesize();
-                        let file_fd = fi.file.as_raw_fd();
-                        if opts.spacer && opts.spacer_duration > 0 {
-                            match SelectiveReader::new(file_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
-                                ReadResult::Data(n) => { readbytes = n; }
-                                ReadResult::Spacer if !spacer_started => {
-                                    // First timeout — no spacer yet
-                                    spacer_started = true;
-                                    continue;
-                                }
-                                ReadResult::Spacer => {
-                                    io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                                    continue;
-                                }
-                                ReadResult::End => continue,
-                            }
-                        } else {
-                            let mut n = fi.file.read(&mut buf).unwrap();
-                            if n == 0 { continue; }
-                            while n < buf.len()-1 && buf[n-1] != b'\n' {
-                                n += fi.file.read(&mut buf[n..]).unwrap();
-                            }
-                            readbytes = n;
+                        let mut n = fi.file.read(&mut buf).unwrap();
+                        if n == 0 { continue; }
+                        while n < buf.len()-1 && buf[n-1] != b'\n' {
+                            n += fi.file.read(&mut buf[n..]).unwrap();
                         }
+                        readbytes = n;
+                        rb.clear();
                     }
-                } else {
-                    continue;
                 }
-                rb.clear();
-                spacer_started = true;     // at least one line has been seen
-                spacer_fired_since_output = false;  // reset after output
             },
             Op::ReadSocket(ref mut stream) => {
                 bx = 0;
-                let sock_fd = stream.as_raw_fd();
-                if opts.spacer && opts.spacer_duration > 0 {
-                    match SelectiveReader::new(sock_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
-                        ReadResult::Data(n) => { readbytes = n; }
-                        ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                            continue;
-                        }
-                        ReadResult::End => return,
+                match stream.read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
                     }
-                } else {
-                    match stream.read(&mut buf) {
-                        Ok(n) if n > 0 => { readbytes = n; }
-                        Ok(_) => return,
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            continue;
-                        }
-                        Err(e) => { eprintln!("socket read error:{}", e); return; }
+                    Err(e) => {
+                        eprintln!("socket read error:{}", e);
+                        return;
                     }
                 }
                 rb.clear();
             }
             Op::ReadCmd(ref mut stdout) => {
                 bx = 0;
-                let cmd_fd = stdout.as_raw_fd();
-                if opts.spacer && opts.spacer_duration > 0 {
-                    match SelectiveReader::new(cmd_fd).select_read(&mut buf, true, opts.spacer_duration, false) {
-                        ReadResult::Data(n) => { readbytes = n; }
-                        ReadResult::Spacer => {
-                            io::stdout().write_all(format!("{}\n", { let c = opts.spacer_counter; opts.spacer_counter += 1; spacer_line(spacer_width(), c + 1) }).as_bytes()).unwrap();
-                            continue;
-                        }
-                        ReadResult::End => return,
-                    }
-                } else {
-                    match stdout.read(&mut buf) {
-                        Ok(n) if n > 0 => { readbytes = n; }
-                        Ok(_) => return,
-                        Err(e) => { eprintln!("command read error:{}", e); return; }
+                match stdout.read(&mut buf) {
+                    Ok(n) if n > 0 => readbytes = n,
+                    Ok(_) => return,
+                    Err(e) => {
+                        eprintln!("command read error:{}", e);
+                        return;
                     }
                 }
                 rb.clear();
@@ -673,13 +501,16 @@ pub fn runvm(mut ops: Vec<Op>, tailfiles: HashMap::<PathBuf,FileInfo>, opts: &mu
                     } else {
                         io::stdout().write_all(header.as_bytes()).unwrap();
                     }
+                    if let Some(sp) = spacer.as_ref() { sp.bump(); }
                 }
             },
             Op::PrintPlain => {
                 io::stdout().write_all(&buf[ax..pbx]).unwrap();
+                if let Some(sp) = spacer.as_ref() { sp.bump(); }
             },
             Op::PrintColor => {
                 color.as_ref().unwrap().borrow_mut().print(&buf[ax..pbx], Some(fidx));
+                if let Some(sp) = spacer.as_ref() { sp.bump(); }
             },
             Op::ServerWrite => {
                 if let Some(ref clients) = opts.tcp_clients {
@@ -1127,4 +958,5 @@ pub fn vm_exec(cmd: String, opts: &mut Opts) {
 #[link(name = "c")]
 extern "C" {
     fn killpg(pgid: i32, sig: i32) -> i32;
+    fn localtime_r(timep: *const i64, result: *mut u8) -> *mut u8;
 }

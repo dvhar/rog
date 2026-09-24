@@ -1,6 +1,6 @@
 # rog
 
-A log reader for filtering, monitoring, and serving log data. Somewhere between tail -f and lnav.
+Halfway between `tail -f` and `lnav`. A log reader for filtering, monitoring, and serving log data.
 
 ## Modes
 
@@ -19,7 +19,6 @@ A log reader for filtering, monitoring, and serving log data. Somewhere between 
 
 ## Formatting
 
-- `-z NUM` — Print a spacer line with an incrementing counter after `NUM` seconds of no output
 - `-r F1,F2,...` — Remove fields matching `key=value` from output
 - `-m THEME` — Syntax highlighting theme (13 themes available; use `-c` to disable)
 - `-u` — Truncate lines to terminal width
@@ -30,6 +29,8 @@ A log reader for filtering, monitoring, and serving log data. Somewhere between 
 - `-d PORT` — TCP port (default: 19888)
 - `-x REGEX` — Exclude files matching pattern
 - `-H` — Parse tail-style headers (`==> file <==`) in stdin/socket input
+- `-S` — Print a spacer line when output stops (not used in server mode)
+- `-t SEC` — Seconds of idle output before a spacer prints (implies `-S`, default 1)
 - `-p CHARS` — Use preset args from `~/.config/rogrc`
 - `-P` — Skip loading presets
 

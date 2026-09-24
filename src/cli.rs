@@ -195,8 +195,7 @@ pub struct Opts {
     pub force_color: bool,
     pub exec_cmd: Option<String>,
     pub spacer: bool,
-    pub spacer_duration: u64,
-    pub spacer_counter: u64,
+    pub spacer_sec: f64,
 
 }
 impl Opts {
@@ -229,9 +228,8 @@ impl Opts {
         if self.lines == 0 { self.lines = other.lines; }
         self.force_color |= other.force_color;
         if self.exec_cmd == None { self.exec_cmd = other.exec_cmd.take(); }
-        self.spacer = self.spacer || other.spacer;
-        if self.spacer_duration == 0 { self.spacer_duration = other.spacer_duration; }
-        if self.spacer_counter == 0 { self.spacer_counter = other.spacer_counter; }
+        self.spacer |= other.spacer;
+        if self.spacer_sec == 0.0 { self.spacer_sec = other.spacer_sec; }
     }
 
     pub fn new() -> Self {
@@ -267,7 +265,8 @@ impl Opts {
         opts.optopt("b", "stop", "stop printing (and exit if no -a) after a matching line is found", "REGEX");
         opts.optopt("l", "lines", "print N more lines after stop pattern before exiting", "NUM");
         opts.optopt("e", "exec", "run a shell command and read its stdout as input", "CMD");
-        opts.optopt("z", "spacer", "print a spacer line (terminal width) after N seconds of no output (default: 2s)", "NUM");
+        opts.optflag("S", "spacer", "print a spacer line when output has been idle (not used in server mode)");
+        opts.optopt("t", "spacer-sec", "seconds of idle output before a spacer prints (implies -S, default: 1)", "SEC");
         let mut matches = match opts.parse(args) {
             Ok(m) => { m },
             Err(e) => die!("bad args:{}", e),
@@ -282,7 +281,7 @@ impl Opts {
             });
             die!("{}\n{}\n\nColor themes:\n{}\n\nConfig file ({}):\n{}",
                 opts.usage(&args[0]),
-                "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nReads from stdin by default.",
+                "Use files as positional parameters to function the same as tail -f.\nUse -f for fifo mode, -s for server mode, -k for client mode.\nUse -H to parse tail-style file headers in stdin/socket input.\nUse -S to print a spacer line when output stops (after -t seconds idle, default 1).\nReads from stdin by default.",
                 theme_list, rogrc, rc_contents);
         }
         let theme = match (matches.opt_present("c"), matches.opt_str("m"), matches.opt_present("F")) {
@@ -341,14 +340,13 @@ impl Opts {
             lines: matches.opt_str("l").unwrap_or_else(|| "0".to_string()).parse::<usize>().unwrap_or(0),
             force_color: matches.opt_present("F"),
             exec_cmd: matches.opt_str("e"),
-            spacer: matches.opt_present("z"),
-            spacer_duration: 0,
-            spacer_counter: 0,
+            spacer: matches.opt_present("S") || matches.opt_present("t"), // -t implies -S
+            spacer_sec: matches.opt_str("t")
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|s| *s > 0.0)
+                .unwrap_or(0.0),
+
         };
-        if opts.spacer {
-            let raw = matches.opt_str("z").unwrap_or("2".to_string());
-            opts.spacer_duration = raw.parse().unwrap_or(2);
-        }
         if recurse && !matches.opt_present("P") {
             read_presets(matches.opt_str("p").unwrap_or("".to_string()), &mut opts);
         }
